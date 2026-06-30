@@ -1,0 +1,167 @@
+---
+title: "casr-san: AddressSanitizer Report Generation"
+sidebarTitle: "casr-san"
+description: "Generate CASR reports from AddressSanitizer and MemorySanitizer output. Supports ASAN, MSAN, Go, and Rust fuzz targets with severity estimation."
+---
+
+`casr-san` runs a target binary instrumented with AddressSanitizer (or MemorySanitizer) and
+produces a structured `.casrep` JSON report. The report includes severity classification,
+stack trace, crash line, source context, OS info, and the raw sanitizer output. It also
+handles Go panics and Rust backtraces when those are present in the sanitizer output.
+
+## Synopsis
+
+```
+Usage: casr-san [OPTIONS] <--stdout|--output <REPORT>> -- <ARGS>...
+
+Arguments:
+  <ARGS>...  Add "-- ./binary <arguments>" to run executable
+
+Options:
+  -o, --output <REPORT>       Path to save report. Path can be a directory, then report
+                              name is generated
+      --stdout                Print CASR report to stdout
+      --stdin <FILE>          Stdin file for program
+  -t, --timeout <SECONDS>     Timeout (in seconds) for target execution, 0 value means
+                              that timeout is disabled [default: 0]
+      --ignore <FILE>         File with regular expressions for functions and file paths
+                              that should be ignored
+      --strip-path <PREFIX>   Path prefix to strip from stacktrace and crash line
+                              [env: CASR_STRIP_PATH=]
+      --ld-preload <LIBS>...  Set LD_PRELOAD for the target program without disrupting
+                              the CASR process itself (both " " and ":" are valid
+                              delimiter) [env: CASR_PRELOAD=]
+  -h, --help                  Print help
+  -V, --version               Print version
+```
+
+## Options
+
+<ParamField path="-o, --output" type="path">
+  Path to save the generated `.casrep` report. If the path points to an existing directory,
+  a report filename is generated automatically based on the crash hash.
+</ParamField>
+
+<ParamField path="--stdout" type="flag">
+  Print the CASR report as JSON to stdout instead of writing to a file. Mutually exclusive
+  with `--output`; exactly one of the two must be provided.
+</ParamField>
+
+<ParamField path="--stdin" type="path">
+  Path to a file that will be redirected to the target program's standard input.
+</ParamField>
+
+<ParamField path="-t, --timeout" type="integer" default="0">
+  Execution timeout in seconds. A value of `0` disables the timeout entirely.
+</ParamField>
+
+<ParamField path="--ignore" type="path">
+  Path to a file containing regular expressions for function names and file paths that
+  should be excluded from stack trace analysis. See the ignore file format in
+  [casr-cluster](/tools/casr-cluster).
+</ParamField>
+
+<ParamField path="--strip-path" type="string">
+  A path prefix to strip from all stack trace entries and the crash line in the report.
+  Can also be set via the `CASR_STRIP_PATH` environment variable.
+</ParamField>
+
+<ParamField path="--ld-preload" type="string">
+  One or more shared library paths to inject into the target process via `LD_PRELOAD`,
+  without affecting the `casr-san` process itself. Space (` `) and colon (`:`) are both
+  valid delimiters. Can also be set via the `CASR_PRELOAD` environment variable.
+</ParamField>
+
+## Examples
+
+### Compile with AddressSanitizer and generate a report
+
+<Steps>
+  <Step title="Compile the target with ASAN">
+    Build your binary with address sanitizer and debug symbols:
+
+    ```bash
+    clang++ -fsanitize=address -O0 -g \
+        casr/tests/casr_tests/test_asan_df.cpp \
+        -o test_asan_df
+    ```
+  </Step>
+  <Step title="Run casr-san">
+    Execute the target through `casr-san` and save the report:
+
+    ```bash
+    casr-san -o asan.casrep -- ./test_asan_df
+    ```
+  </Step>
+  <Step title="View the report">
+    Inspect the generated report with `casr-cli`:
+
+    ```bash
+    casr-cli asan.casrep
+    ```
+  </Step>
+</Steps>
+
+### Save report to a directory
+
+When `--output` points to an existing directory, `casr-san` derives the filename from
+the crash hash automatically:
+
+```bash
+mkdir reports/
+casr-san -o reports/ -- ./test_asan_df
+```
+
+### Print report to stdout
+
+```bash
+casr-san --stdout -- ./test_asan_df
+```
+
+### Pass input via stdin
+
+```bash
+casr-san -o report.casrep --stdin crash_input.bin -- ./target_binary
+```
+
+### Set a timeout
+
+```bash
+casr-san -o report.casrep -t 30 -- ./target_binary input.bin
+```
+
+## Notes
+
+<Warning>
+  **Docker seccomp profile** — `casr-san` uses the `personality` syscall on Linux to
+  disable address-space layout randomisation (ASLR) for the target process. If you are
+  running inside a Docker container, you must allow this syscall in your seccomp profile.
+  See the [Docker seccomp documentation](https://docs.docker.com/engine/security/seccomp/)
+  for details.
+</Warning>
+
+<Note>
+  **Rust fuzz targets** — When `casr-san` is used to analyse a Rust fuzz target you can
+  choose whether the report is built from the ASAN stack trace or from the Rust backtrace.
+  Set `RUST_BACKTRACE=1` (or `RUST_BACKTRACE=full`) before running `casr-san` to use the
+  Rust backtrace instead.
+</Note>
+
+<Note>
+  **MemorySanitizer** — `casr-san` also supports targets compiled with
+  `-fsanitize=memory` (MSAN). Compile with:
+
+  ```bash
+  clang++ -fsanitize=memory -O0 -g target.cpp -o target_msan
+  casr-san -o msan.casrep -- ./target_msan
+  ```
+
+  The generated report will contain an `MsanReport` field instead of `AsanReport`.
+</Note>
+
+<Tip>
+  `casr-san` automatically sets `ASAN_OPTIONS=hard_rss_limit_mb=2048` and forces
+  `symbolize=1` so that symbolised stack traces are always available. You can extend
+  `ASAN_OPTIONS` in your environment — `casr-san` will merge your values rather than
+  replace them.
+</Tip>

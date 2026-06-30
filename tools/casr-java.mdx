@@ -1,0 +1,109 @@
+---
+title: "casr-java: Java Crash Report Generator"
+sidebarTitle: "casr-java"
+description: "Generate CASR reports from Java exceptions and Jazzer fuzzer crashes. Supports source-level crash lines via configurable Java source directory paths."
+---
+
+`casr-java` analyzes Java crash output — unhandled exceptions, thread dumps, and Jazzer-emitted `== Java Exception:` blocks — and produces structured `.casrep` reports. It integrates with [Jazzer](https://github.com/CodeIntelligenceTesting/jazzer), the coverage-guided Java fuzzer from Code Intelligence, and is used automatically by [`casr-libfuzzer`](/fuzzing/casr-libfuzzer) when a Java target is detected.
+
+The tool captures exception class, message, and full stack trace from stderr. When Java source directories are provided, it walks those directories to locate the matching `.java` source file and embeds the crash-site source snippet in the report.
+
+## Synopsis
+
+```
+casr-java [OPTIONS] <--stdout|--output <REPORT>> -- <ARGS>...
+```
+
+The `--` separator is required. Everything after it is the command CASR will execute and capture output from (typically `java` or `jazzer`).
+
+## Options
+
+<ParamField body="-o, --output" type="path">
+  Path to save the `.casrep` report file. If a directory is provided, the report filename is generated automatically from the crash context.
+</ParamField>
+
+<ParamField body="--stdout" type="flag">
+  Print the CASR report as JSON to stdout instead of writing it to a file. Mutually exclusive with `--output`; exactly one of the two is required.
+</ParamField>
+
+<ParamField body="--stdin" type="path">
+  Path to a file that will be fed to the target program's standard input.
+</ParamField>
+
+<ParamField body="--source-dirs" type="path...">
+  One or more directories to search recursively for `.java` source files. When a stack frame references `MyClass.java`, CASR walks these directories to find the file and embed the source snippet at the crash line. Multiple directories can be provided as separate arguments on the command line, or as a colon-separated string via the `CASR_SOURCE_DIRS` environment variable.
+</ParamField>
+
+<ParamField body="-t, --timeout" type="integer" default="0">
+  Maximum number of seconds to wait for the target process to finish. A value of `0` disables the timeout entirely.
+</ParamField>
+
+<ParamField body="--ignore" type="path">
+  Path to a file containing regular expressions for function names and file paths that should be excluded from stack trace analysis.
+</ParamField>
+
+<ParamField body="--strip-path" type="string">
+  A path prefix removed from every file path in the stack trace and crash line. Also settable via `CASR_STRIP_PATH`.
+</ParamField>
+
+<ParamField body="--ld-preload" type="string">
+  Shared library paths injected via `LD_PRELOAD` into the target process only. Space or colon delimited. Also settable via `CASR_PRELOAD`.
+</ParamField>
+
+## CASR_SOURCE_DIRS environment variable
+
+Instead of passing `--source-dirs` on every invocation, export the variable with a colon-separated list of paths:
+
+```bash
+export CASR_SOURCE_DIRS=/home/user/myproject/src:/home/user/myproject/lib
+casr-java -o java.casrep -- java -cp target/myapp.jar com.example.Main
+```
+
+This is especially useful when using `casr-libfuzzer` for bulk triage, where the source dirs flag cannot be set per-invocation in the triage command.
+
+## Examples
+
+Analyze a plain Java file that throws an unhandled exception:
+
+```bash
+casr-java -o java.casrep -- java casr/tests/casr_tests/java/Test1.java
+```
+
+Analyze a Jazzer crash replay with source context:
+
+```bash
+casr-java -o jazzer.casrep \
+  --source-dirs /home/user/project/src \
+  -- java -cp fuzzer.jar \
+     com.code_intelligence.jazzer.Jazzer \
+     --target_class=com.example.FuzzTarget \
+     crash-abc123
+```
+
+Print the report to stdout:
+
+```bash
+casr-java --stdout -- java casr/tests/casr_tests/java/Test1.java
+```
+
+## Fuzzer integration
+
+`casr-java` handles single-crash analysis. For bulk triage of Jazzer crash directories, use [`casr-libfuzzer`](/fuzzing/casr-libfuzzer), which auto-detects Java targets and invokes `casr-java` for each crash input.
+
+```bash
+casr-libfuzzer \
+  -i ./jazzer-crashes/ \
+  -o out/ \
+  -- java -cp fuzzer.jar \
+     com.code_intelligence.jazzer.Jazzer \
+     --target_class=com.example.FuzzTarget \
+     @@
+```
+
+<Note>
+  If the exception is absent from stderr but sanitizer output is present, `casr-java` automatically delegates to `casr-san` so ASAN-level severity analysis is applied. This covers Jazzer runs that instrument both Java code and native JNI libraries.
+</Note>
+
+<Tip>
+  Stack frames marked `Native Method` or `Unknown Source` are silently skipped during stacktrace parsing — they carry no file/line information and would skew crash-line detection. Source context is only embedded when `--source-dirs` (or `CASR_SOURCE_DIRS`) resolves the `.java` file for the top frame.
+</Tip>

@@ -1,72 +1,76 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "CASR",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
-  },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+    "primary": "#CC2936",
+    "light": "#FF4D5A",
+    "dark": "#991F2B"
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/ispras/casr"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/ispras/casr"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "CLI Tools",
+            "pages": [
+              "tools/casr-san",
+              "tools/casr-gdb",
+              "tools/casr-core",
+              "tools/casr-ubsan",
+              "tools/casr-cluster",
+              "tools/casr-cli"
+            ]
+          },
+          {
+            "group": "Language Support",
+            "pages": [
+              "tools/casr-python",
+              "tools/casr-java",
+              "tools/casr-js",
+              "tools/casr-csharp",
+              "tools/casr-lua"
+            ]
+          },
+          {
+            "group": "Fuzzer Integration",
+            "pages": [
+              "fuzzing/overview",
+              "fuzzing/casr-afl",
+              "fuzzing/casr-libfuzzer",
+              "fuzzing/casr-dojo"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/severity-classes",
+              "reference/report-format",
+              "reference/libcasr"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

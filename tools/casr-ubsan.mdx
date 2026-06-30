@@ -1,0 +1,190 @@
+---
+title: "casr-ubsan: UndefinedBehaviorSanitizer Report Triage"
+sidebarTitle: "casr-ubsan"
+description: "Triage UndefinedBehaviorSanitizer errors across input directories, deduplicate by crash line, and generate structured CASR reports in parallel."
+---
+
+`casr-ubsan` runs a UBSAN-instrumented binary against every file in one or more input
+directories, collects all UndefinedBehaviorSanitizer warnings, deduplicates them by
+**crash line** (source file and line number), and generates a structured `.casrep` report
+for each unique warning in parallel. Results are written to an output directory.
+
+Unlike `casr-san` and `casr-gdb`, which operate on a single crash at a time,
+`casr-ubsan` is a **batch triage tool**: it accepts entire fuzzer corpus directories as
+input and produces a deduplicated set of reports in one pass.
+
+## Synopsis
+
+```
+Usage: casr-ubsan [OPTIONS] --input <INPUT_DIRS>... --output <OUTPUT_DIR> -- <ARGS>...
+
+Arguments:
+  <ARGS>...  Add "-- <path> <arguments>" to run
+
+Options:
+  -l, --log-level <log-level>  Logging level [default: info] [possible values: info,
+                               debug]
+  -j, --jobs <jobs>            Number of parallel jobs for generating CASR reports
+                               [default: half of cpu cores]
+  -t, --timeout <SECONDS>      Timeout (in seconds) for target execution, 0 value means
+                               that timeout is disabled [default: 0]
+  -i, --input <INPUT_DIRS>...  Target input directory list
+  -o, --output <OUTPUT_DIR>    Output directory with triaged reports
+  -f, --force-remove           Remove output project directory if it exists
+      --ld-preload <LIBS>...   Set LD_PRELOAD for the target program without disrupting
+                               the CASR process itself (both " " and ":" are valid
+                               delimiter) [env: CASR_PRELOAD=]
+  -h, --help                   Print help
+  -V, --version                Print version
+```
+
+## Options
+
+<ParamField path="-l, --log-level" type="string" default="info">
+  Controls the verbosity of log output. Use `debug` for verbose per-input diagnostics.
+
+  Possible values: `info`, `debug`
+</ParamField>
+
+<ParamField path="-j, --jobs" type="integer">
+  Number of parallel worker threads used when extracting and generating reports. Defaults
+  to half of the available CPU cores.
+</ParamField>
+
+<ParamField path="-t, --timeout" type="integer" default="0">
+  Per-input execution timeout in seconds. A value of `0` disables the timeout.
+</ParamField>
+
+<ParamField path="-i, --input" type="path">
+  One or more directories containing input files (crash seeds, corpus entries, etc.).
+  `casr-ubsan` runs the target against every regular file found by recursively walking
+  each directory. **This flag accepts directories, not individual files.**
+</ParamField>
+
+<ParamField path="-o, --output" type="path">
+  Output directory where deduplicated `.casrep` reports and their corresponding input
+  files will be saved. The directory is created if it does not exist. If it already
+  exists and is non-empty, `casr-ubsan` will exit with an error unless `--force-remove`
+  is specified.
+</ParamField>
+
+<ParamField path="-f, --force-remove" type="flag">
+  Forcibly remove the output directory and recreate it before writing reports. Use with
+  care — all previous contents of the output directory will be deleted.
+</ParamField>
+
+<ParamField path="--ld-preload" type="string">
+  One or more shared library paths to inject into the target process via `LD_PRELOAD`,
+  without affecting the `casr-ubsan` process itself. Space (` `) and colon (`:`) are
+  both valid delimiters. Can also be set via the `CASR_PRELOAD` environment variable.
+</ParamField>
+
+## Deduplication
+
+UBSAN deduplication is based on **crash line comparison** (source file and line number),
+not on stack trace hashing. The rationale is that many distinct inputs may trigger the
+same undefined-behaviour site; deduplication removes those duplicates first, then
+generates one report per unique site.
+
+Column numbers are stripped when comparing crash lines, so errors at the same line but
+different columns are treated as the same crash.
+
+## Examples
+
+### Compile with UBSAN and triage a corpus
+
+<Steps>
+  <Step title="Compile the target with UBSAN">
+    Build your binary with undefined behaviour sanitizer and debug symbols:
+
+    ```bash
+    clang++ -fsanitize=undefined -O0 -g \
+        casr/tests/casr_tests/ubsan/test_ubsan.cpp \
+        -o test_ubsan
+    ```
+  </Step>
+  <Step title="Run casr-ubsan against an input directory">
+    Pass the input directory with `-i` and specify an output directory with `-o`. Use
+    `@@` as a placeholder for the input file path in the argument list:
+
+    ```bash
+    casr-ubsan \
+        -i casr/tests/casr_tests/ubsan/input1 \
+        -o output \
+        -- ./test_ubsan @@
+    ```
+  </Step>
+  <Step title="View the triage summary">
+    Use `casr-cli` to print joint statistics for all generated reports:
+
+    ```bash
+    casr-cli output
+    ```
+  </Step>
+</Steps>
+
+### Multiple input directories
+
+Pass several input directories in a single invocation:
+
+```bash
+casr-ubsan \
+    -i corpus/queue corpus/crashes \
+    -o ubsan_reports \
+    -- ./test_ubsan @@
+```
+
+### Read input from stdin
+
+Omit `@@` to have `casr-ubsan` pass each input file on stdin:
+
+```bash
+casr-ubsan \
+    -i casr/tests/casr_tests/ubsan/input1 \
+    -o output \
+    -- ./test_ubsan
+```
+
+### Limit parallelism and set a timeout
+
+```bash
+casr-ubsan -j 4 -t 10 \
+    -i corpus/ \
+    -o output \
+    -- ./test_ubsan @@
+```
+
+### Overwrite an existing output directory
+
+```bash
+casr-ubsan -f \
+    -i corpus/ \
+    -o output \
+    -- ./test_ubsan @@
+```
+
+## Notes
+
+<Note>
+  **Input must be directories** — Unlike `casr-san` and `casr-gdb`, `casr-ubsan` does
+  not accept individual files with `-i`. The argument must be a directory path. Each
+  regular file inside the directory tree is used as one input to the target binary.
+</Note>
+
+<Note>
+  **UBSAN options are set automatically** — `casr-ubsan` sets
+  `UBSAN_OPTIONS=print_stacktrace=1,report_error_type=1,symbolize=1` before running the
+  target. If `UBSAN_OPTIONS` is already set in the environment, `casr-ubsan` merges
+  these required values rather than replacing your settings.
+</Note>
+
+<Tip>
+  After running `casr-ubsan`, use `casr-cluster -d` to perform an additional stack-trace
+  based deduplication pass if the same undefined-behaviour site is reachable via
+  multiple distinct call chains:
+
+  ```bash
+  casr-cluster -d output output-dedup
+  casr-cli output-dedup
+  ```
+</Tip>

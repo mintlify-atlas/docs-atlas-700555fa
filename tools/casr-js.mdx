@@ -1,0 +1,113 @@
+---
+title: "casr-js: JavaScript Crash Report Generator"
+sidebarTitle: "casr-js"
+description: "Generate CASR reports from Node.js exceptions and Jazzer.js or jsfuzz fuzzer crashes. Parses V8 stack traces with source file and line resolution."
+---
+
+`casr-js` analyzes JavaScript crash output from Node.js — unhandled exceptions and V8 stack traces — and produces structured `.casrep` reports. It integrates with both [Jazzer.js](https://github.com/CodeIntelligenceTesting/jazzer.js), the Node.js coverage-guided fuzzer from Code Intelligence, and [jsfuzz](https://github.com/fuzzitdev/jsfuzz), making it the standard report generator for JavaScript fuzzing pipelines in CASR.
+
+The tool detects the error type and message from the first line of stderr (matching patterns like `TypeError:`, `ReferenceError:`, `Thrown at:`, etc.), then extracts the V8 `at …` stack frames, resolves the crash line to a source file and line number, and embeds the source snippet when available.
+
+When invoked via `node` or `jsfuzz`, the executable path recorded in the report is set to the `.js` script rather than the interpreter itself, giving more meaningful crash fingerprints. For `npx jazzer`, the fuzzer target script path is used.
+
+## Synopsis
+
+```
+casr-js [OPTIONS] <--stdout|--output <REPORT>> -- <ARGS>...
+```
+
+The `--` separator is required. Everything after it is the command CASR will execute (typically `node <script.js>`, `npx jazzer <target.js>`, or `jsfuzz <target.js>`).
+
+## Options
+
+<ParamField body="-o, --output" type="path">
+  Path to save the `.casrep` report file. If a directory is provided, the report filename is generated automatically from the crash context.
+</ParamField>
+
+<ParamField body="--stdout" type="flag">
+  Print the CASR report as JSON to stdout instead of writing it to a file. Mutually exclusive with `--output`; exactly one of the two is required.
+</ParamField>
+
+<ParamField body="--stdin" type="path">
+  Path to a file fed to the target program's standard input. Useful when the fuzz target reads corpus bytes from stdin.
+</ParamField>
+
+<ParamField body="-t, --timeout" type="integer" default="0">
+  Maximum number of seconds to wait for the target process to finish. A value of `0` disables the timeout entirely.
+</ParamField>
+
+<ParamField body="--ignore" type="path">
+  Path to a file containing regular expressions for function names and file paths that should be excluded from stack trace analysis.
+</ParamField>
+
+<ParamField body="--strip-path" type="string">
+  A path prefix removed from every file path in the stack trace and crash line. Also settable via `CASR_STRIP_PATH`.
+</ParamField>
+
+<ParamField body="--ld-preload" type="string">
+  Shared library paths injected via `LD_PRELOAD` into the target process only. Space or colon delimited. Also settable via `CASR_PRELOAD`.
+</ParamField>
+
+## Stack trace parsing
+
+`casr-js` parses V8-format stack traces. Each `at` frame is processed to extract:
+
+- **Function name** (including `[as method]` aliases and `eval at` chains)
+- **Source file** (absolute paths only; relative paths and `<anonymous>` entries are preserved but filtered from crash-line resolution)
+- **Line and column numbers**
+
+Frames referencing `unknown location` are skipped. `eval` frames with nested eval chains are resolved to their originating source location.
+
+## Examples
+
+Analyze a plain Node.js script that throws an unhandled exception:
+
+```bash
+casr-js -o js.casrep -- node casr/tests/casr_tests/js/test_casr_js.js
+```
+
+Analyze a Jazzer.js crash with a corpus file:
+
+```bash
+casr-js -o jazzer_js.casrep \
+  -- npx jazzer casr/tests/casr_tests/js/FuzzTarget.js crash-abc123
+```
+
+Analyze a jsfuzz crash:
+
+```bash
+casr-js -o jsfuzz.casrep \
+  -- jsfuzz casr/tests/casr_tests/js/fuzz_target.js corpus/crash-001
+```
+
+Strip a build prefix from all stack frame paths:
+
+```bash
+casr-js -o js.casrep \
+  --strip-path /home/ci/build \
+  -- node fuzz_target.js crash_input
+```
+
+## Fuzzer integration
+
+`casr-js` handles single-crash analysis. For bulk triage of Jazzer.js or jsfuzz crash directories, use [`casr-libfuzzer`](/fuzzing/casr-libfuzzer), which auto-detects JavaScript targets and invokes `casr-js` for each crash file.
+
+```bash
+# Install dependencies first
+npm install xml2js
+npm install --save-dev @jazzer.js/core
+
+# Triage a directory of Jazzer.js crashes
+casr-libfuzzer \
+  -i ./xml2js-crashes/ \
+  -o out/ \
+  -- npx jazzer FuzzTarget.js
+```
+
+<Note>
+  If no JavaScript-style error is found in stderr but sanitizer output is present, `casr-js` automatically delegates to `casr-san`. This handles cases where native Node.js addons crash via AddressSanitizer rather than a JS exception.
+</Note>
+
+<Tip>
+  When using `jsfuzz`, ensure the fuzz target script throws (or lets propagate) an unhandled exception on bad input. `casr-js` requires the error message line followed by `at` frames to identify the crash type and location.
+</Tip>

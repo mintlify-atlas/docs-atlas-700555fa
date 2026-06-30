@@ -1,47 +1,203 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "CASR Quickstart: From Crash to Triaged Report in Minutes"
+sidebarTitle: "Quickstart"
+description: "Compile a C++ program with AddressSanitizer, generate a .casrep crash report with casr-san, view it in the TUI, then deduplicate and cluster results."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+In this guide you will compile a small C++ program with AddressSanitizer, trigger a crash, capture a structured `.casrep` report with `casr-san`, inspect it interactively with `casr-cli`, and then run `casr-cluster` to deduplicate and group a collection of reports. By the end you will have a working triage pipeline you can adapt to your own projects.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Install CASR">
+    If you have not installed CASR yet, the fastest path is via Cargo:
 
     ```bash
-    npm install your-package
+    cargo install casr
     ```
-  </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
 
-    ```bash
-    your-cli init
+    For full installation options — prebuilt binaries, Docker, build-from-source — see the [Installation guide](/installation).
+  </Step>
+
+  <Step title="Create a test program with AddressSanitizer">
+    Save the following double-free example as `test_asan_df.cpp`:
+
+    ```cpp
+    #include <iostream>
+
+    int main(int argc, char** argv)
+    {
+        int* a = (int*)malloc(sizeof(int));
+        free(a);
+        free(a);  // double-free — triggers ASAN
+        return 0;
+    }
     ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+    Compile with AddressSanitizer enabled and debug symbols included:
 
     ```bash
-    your-cli start
+    clang++ -fsanitize=address -O0 -g test_asan_df.cpp -o test_asan_df
+    ```
+
+    <Info>
+      The `-O0 -g` flags disable optimizations and embed debug info so that CASR can include source-level context (file name, line number, surrounding code) inside the report.
+    </Info>
+  </Step>
+
+  <Step title="Generate a crash report">
+    Run `casr-san` and pass the target binary after the `--` separator. CASR intercepts the AddressSanitizer output, enriches it with OS metadata, register values, and disassembly, then writes a `.casrep` file:
+
+    ```bash
+    casr-san -o asan.casrep -- ./test_asan_df
+    ```
+
+    On success you will see a confirmation line and the report will be saved to `asan.casrep`.
+
+    **What's inside a `.casrep` file?**
+
+    Reports are plain JSON — you can open them with any text editor or process them programmatically. Here is a representative excerpt:
+
+    ```json
+    {
+      "Date": "2024-06-01T10:22:05.123456+00:00",
+      "OS": "Ubuntu",
+      "OSRelease": "22.04",
+      "Architecture": "amd64",
+      "ExecutablePath": "/home/user/test_asan_df",
+      "ProcCmdline": "/home/user/test_asan_df",
+      "CrashSeverity": {
+        "Type": "NOT_EXPLOITABLE",
+        "ShortDescription": "HeapDoubleFree",
+        "Description": "Double free on heap",
+        "Explanation": "The target attempted to free a heap buffer that was already freed."
+      },
+      "Stacktrace": [
+        "#0 0x... in free /llvm/lib/asan/asan_malloc_linux.cpp:52",
+        "#1 0x... in main /home/user/test_asan_df.cpp:7:5",
+        "#2 0x... in __libc_start_main"
+      ],
+      "CrashLine": "/home/user/test_asan_df.cpp:7:5",
+      "Source": [
+        "      5      int* a = (int*)malloc(sizeof(int));",
+        "      6      free(a);",
+        "--->  7      free(a);",
+        "      8      return 0;"
+      ],
+      "AsanReport": [
+        "==12345==ERROR: AddressSanitizer: attempting double-free on 0x... in thread T0",
+        "..."
+      ]
+    }
+    ```
+
+    Key fields at a glance:
+
+    | Field | Description |
+    |---|---|
+    | `CrashSeverity.Type` | Exploitability class: `EXPLOITABLE`, `PROBABLY_EXPLOITABLE`, `NOT_EXPLOITABLE`, `NOT_CRITICAL` |
+    | `CrashSeverity.ShortDescription` | Human-readable crash type (e.g. `HeapDoubleFree`, `SourceAv`) |
+    | `Stacktrace` | Full symbolized stack trace |
+    | `CrashLine` | Source file and line where the crash occurred |
+    | `Source` | Code snippet around the crash site |
+    | `AsanReport` | Raw sanitizer output captured from stderr |
+  </Step>
+
+  <Step title="View the report">
+    `casr-cli` opens the report in an interactive TUI that lets you navigate the stack trace, review source context, and inspect register values and disassembly — all without leaving the terminal:
+
+    ```bash
+    casr-cli asan.casrep
+    ```
+
+    You can also point `casr-cli` at a directory of reports to see **joint cluster statistics** — total crashes, severity distribution, unique crash types:
+
+    ```bash
+    casr-cli reports/
+    ```
+
+    <Tip>
+      Export an entire cluster directory to SARIF format for upload to GitHub Advanced Security, GitLab, or any SARIF-compatible tool:
+
+      ```bash
+      casr-cli --sarif out.sarif --tool libfuzzer --source-root /myproject clusters/
+      ```
+    </Tip>
+  </Step>
+
+  <Step title="Deduplicate reports">
+    After a fuzzing run you typically have hundreds of crash inputs that trigger the same underlying bug. `casr-cluster -d` compares stack traces and copies only the unique reports into a new output directory:
+
+    ```bash
+    casr-cluster -d reports/ dedup/
+    ```
+
+    - **Input:** `reports/` — directory containing raw `.casrep` files
+    - **Output:** `dedup/` — deduplicated subset, one report per unique crash
+
+    <Info>
+      Deduplication is based on stack-trace similarity using the [gdb-command](https://github.com/anfedotoff/gdb-command) library. CASR also disables ASLR before analysis so that addresses are stable across runs.
+    </Info>
+  </Step>
+
+  <Step title="Cluster reports">
+    Once duplicates are removed, `casr-cluster -c` groups the remaining reports by root-cause similarity. Each cluster corresponds to a distinct crash location in the code:
+
+    ```bash
+    casr-cluster -c dedup/ clusters/
+    ```
+
+    - **Input:** `dedup/` — deduplicated reports from the previous step
+    - **Output:** `clusters/` — subdirectories `cl1/`, `cl2/`, … each containing related reports
+
+    Browse the clusters interactively:
+
+    ```bash
+    casr-cli clusters/
+    ```
+
+    Or open a specific cluster:
+
+    ```bash
+    casr-cli clusters/cl1/
     ```
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+---
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+## Full Triage Pipeline at a Glance
+
+```bash
+# 1. Compile target with ASAN
+clang++ -fsanitize=address -O0 -g target.cpp -o target_asan
+
+# 2. Generate reports for all crash inputs
+mkdir reports
+for input in crashes/*; do
+  casr-san -o "reports/$(basename "$input").casrep" -- ./target_asan "$input"
+done
+
+# 3. Deduplicate
+casr-cluster -d reports/ dedup/
+
+# 4. Cluster
+casr-cluster -c dedup/ clusters/
+
+# 5. Review
+casr-cli clusters/
+```
+
+---
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="casr-san" icon="shield-virus" href="/introduction#architecture-overview">
+    Learn all flags for ASAN, MSAN, and stdin-based crash collection.
+  </Card>
+  <Card title="casr-cluster" icon="layer-group" href="/introduction#architecture-overview">
+    Advanced clustering options including similarity thresholds and UBSAN triage.
+  </Card>
+  <Card title="casr-afl / casr-libfuzzer" icon="bug" href="/introduction#architecture-overview">
+    One-command end-to-end triage for AFL++ and libFuzzer campaigns.
+  </Card>
+</CardGroup>

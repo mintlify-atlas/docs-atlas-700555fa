@@ -1,0 +1,122 @@
+---
+title: "casr-csharp: C# Crash Report Generator"
+sidebarTitle: "casr-csharp"
+description: "Generate CASR reports from C# unhandled exceptions via dotnet or mono. Integrates with Sharpfuzz and AFL++ for managed-code fuzzing triage workflows."
+---
+
+`casr-csharp` analyzes C# crash output — `Unhandled exception.` and `Unhandled Exception:` blocks emitted by the .NET runtime — and produces structured `.casrep` reports. It integrates with [Sharpfuzz](https://github.com/Metalnem/sharpfuzz), the AFL++-based coverage fuzzer for .NET managed code, and is invoked automatically by [`casr-afl`](/fuzzing/casr-afl) when a Sharpfuzz target is detected.
+
+The target binary must be identified by a `.dll`, `.exe`, or `.csproj` file somewhere in the argument list — CASR uses this to set the `executable_path` in the report. Both the `dotnet` CLI and the `mono` runtime are supported as the process launcher.
+
+## Synopsis
+
+```
+casr-csharp [OPTIONS] <--stdout|--output <REPORT>> -- <ARGS>...
+```
+
+The `--` separator is required. Everything after it is the command CASR will execute (e.g., `dotnet run --project …` or `mono MyApp.exe`).
+
+## Options
+
+<ParamField body="-o, --output" type="path">
+  Path to save the `.casrep` report file. If a directory is provided, the report filename is generated automatically from the crash context.
+</ParamField>
+
+<ParamField body="--stdout" type="flag">
+  Print the CASR report as JSON to stdout instead of writing it to a file. Mutually exclusive with `--output`; exactly one of the two is required.
+</ParamField>
+
+<ParamField body="--stdin" type="path">
+  Path to a file fed to the target program's standard input. Use this when the fuzz harness reads the test case from stdin rather than a file argument.
+</ParamField>
+
+<ParamField body="-t, --timeout" type="integer" default="0">
+  Maximum number of seconds to wait for the target process to finish. A value of `0` disables the timeout entirely.
+</ParamField>
+
+<ParamField body="--ignore" type="path">
+  Path to a file containing regular expressions for function names and file paths that should be excluded from stack trace analysis.
+</ParamField>
+
+<ParamField body="--strip-path" type="string">
+  A path prefix removed from every file path in the stack trace and crash line. Also settable via `CASR_STRIP_PATH`.
+</ParamField>
+
+<ParamField body="--ld-preload" type="string">
+  Shared library paths injected via `LD_PRELOAD` into the target process only. Space or colon delimited. Also settable via `CASR_PRELOAD`.
+</ParamField>
+
+## dotnet vs mono
+
+`casr-csharp` supports both .NET runtime launchers:
+
+| Launcher | Example argument | Use case |
+|----------|-----------------|----------|
+| `dotnet run` | `-- dotnet run --project MyApp.csproj` | Build-and-run from source |
+| `dotnet` (pre-built) | `-- dotnet run --no-build --project MyApp.csproj` | Run pre-built project (recommended for Sharpfuzz with AFL++) |
+| `mono` | `-- mono MyApp.exe` | Mono runtime for `.exe` assemblies |
+
+<Note>
+  CASR validates that the argument list contains a `.dll`, `.exe`, or `.csproj` file. If none is found, the tool exits with an error: `dotnet/mono target is not specified by .dll, .exe or .csproj executable.`
+</Note>
+
+## Examples
+
+Analyze a `dotnet run` project crash:
+
+```bash
+casr-csharp -o csharp.casrep -- dotnet run \
+  --project casr/tests/casr_tests/csharp/test_casr_csharp/test_casr_csharp.csproj
+```
+
+Analyze a pre-built project (faster, recommended when running under AFL++):
+
+```bash
+dotnet publish /tmp/test_casr_afl_csharp/test_casr_afl_csharp.csproj \
+  -c Debug -o /tmp/test_casr_afl_csharp/bin
+
+casr-csharp -o csharp.casrep -- dotnet run --no-build \
+  --project /tmp/test_casr_afl_csharp/test_casr_afl_csharp.csproj crash_input
+```
+
+Analyze a Mono executable crash:
+
+```bash
+casr-csharp -o mono.casrep -- mono /path/to/MyApp.exe input_file
+```
+
+Print the report to stdout:
+
+```bash
+casr-csharp --stdout -- dotnet run --no-build \
+  --project /tmp/test_casr_afl_csharp/test_casr_afl_csharp.csproj crash_input
+```
+
+## Fuzzer integration
+
+`casr-csharp` handles single-crash analysis. For bulk triage of Sharpfuzz + AFL++ crash directories, use [`casr-afl`](/fuzzing/casr-afl), which auto-detects Sharpfuzz targets and invokes `casr-csharp` for each crash input.
+
+```bash
+# Full Sharpfuzz triage pipeline
+cp -r casr/tests/casr_tests/csharp/test_casr_afl_csharp /tmp/test_casr_afl_csharp
+dotnet publish /tmp/test_casr_afl_csharp/test_casr_afl_csharp.csproj \
+  -c Debug -o /tmp/test_casr_afl_csharp/bin
+
+casr-afl \
+  -i casr/tests/casr_tests/casrep/afl-out-sharpfuzz \
+  -o casr_afl_csharp_out
+```
+
+To pass custom run arguments when the AFL crash directory lacks a `cmdline` file, use `--ignore-cmdline`:
+
+```bash
+casr-afl --ignore-cmdline \
+  -i casr/tests/casr_tests/casrep/afl-out-sharpfuzz \
+  -o casr_afl_csharp_out \
+  -- dotnet run --no-build \
+     --project /tmp/test_casr_afl_csharp/test_casr_afl_csharp.csproj @@
+```
+
+<Tip>
+  When using `dotnet run` with `casr-afl` and the `--ignore-cmdline` flag, always build the project first (`dotnet build` or `dotnet publish`) and pass `--no-build` to `dotnet run`. This avoids rebuild overhead on every crash replay.
+</Tip>

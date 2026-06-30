@@ -1,0 +1,111 @@
+---
+title: "Introduction to CASR: Crash Analysis and Severity Report"
+sidebarTitle: "Introduction"
+description: "CASR is a CLI toolkit and Rust library for collecting crash reports, estimating severity, deduplicating, and clustering crashes across multiple languages."
+---
+
+CASR (Crash Analysis and Severity Report) is an open-source toolkit that helps security engineers and fuzzing practitioners collect, triage, and score crash reports. Whether you're post-processing AFL++ output or running a continuous fuzzing pipeline, CASR turns raw crashes into structured, deduplicated, and severity-ranked `.casrep` JSON reports.
+
+## What is CASR
+
+CASR is two things at once:
+
+- **A suite of CLI tools** — each one targets a specific crash source (sanitizers, GDB, coredumps, language runtimes) and produces a unified `.casrep` JSON report.
+- **libcasr** — a Rust library that powers all the tools and can be embedded directly in your own analysis code. It provides APIs for parsing stack traces, collecting crash metadata, deduplicating, clustering, and estimating exploitability.
+
+Reports are stored in JSON and contain severity ratings, OS and package metadata, command-line invocation, stack traces with source snippets, register values, and disassembly — everything needed to reproduce and understand a crash at a glance.
+
+## Key Capabilities
+
+<CardGroup cols={3}>
+  <Card title="Severity Estimation" icon="shield-halved" href="/quickstart">
+    Classifies crashes as `EXPLOITABLE`, `PROBABLY_EXPLOITABLE`, `NOT_EXPLOITABLE`, or `NOT_CRITICAL` for x86, x86\_64, ARM32, AArch64, rv32g, and rv64g — inspired by GDB's exploitable plugin.
+  </Card>
+  <Card title="Multi-Language Support" icon="code" href="/introduction#supported-languages">
+    Generates crash reports for C/C++, Rust, Go, Java, JavaScript, Python, Lua, and C# programs from a single unified interface.
+  </Card>
+  <Card title="Fuzzer Integration" icon="bug" href="/introduction#architecture-overview">
+    First-class triage pipelines for AFL++, libFuzzer, LibAFL, Atheris, Jazzer, Jazzer.js, jsfuzz, Sharpfuzz, go-fuzz, and luzer.
+  </Card>
+  <Card title="Deduplication & Clustering" icon="layer-group" href="/quickstart#step-5-deduplicate-reports">
+    `casr-cluster` removes duplicate reports and groups related crashes by stack-trace similarity so you focus on unique root causes.
+  </Card>
+  <Card title="TUI Viewer" icon="terminal" href="/quickstart#step-4-view-the-report">
+    `casr-cli` renders `.casrep` files in a rich terminal UI, shows cluster statistics, and exports entire result sets to SARIF for CI/CD integration.
+  </Card>
+  <Card title="DefectDojo Integration" icon="upload" href="/introduction#architecture-overview">
+    `casr-dojo` uploads new and unique crash reports directly to a DefectDojo instance, enabling seamless vulnerability management workflows.
+  </Card>
+</CardGroup>
+
+## Architecture Overview
+
+CASR is organized around a family of single-purpose binaries that all emit the same `.casrep` format:
+
+| Tool | Purpose |
+|---|---|
+| `casr-san` | Analyze AddressSanitizer and MemorySanitizer output |
+| `casr-ubsan` | Analyze UndefinedBehaviorSanitizer errors across multiple inputs |
+| `casr-gdb` | Collect reports via GDB for uninstrumented binaries |
+| `casr-core` | Create reports from Linux coredumps |
+| `casr-python` | Analyze Python exceptions; integrates with Atheris |
+| `casr-java` | Analyze Java exceptions; integrates with Jazzer |
+| `casr-js` | Analyze JavaScript exceptions; integrates with Jazzer.js and jsfuzz |
+| `casr-csharp` | Analyze C# exceptions; integrates with Sharpfuzz |
+| `casr-lua` | Analyze Lua runtime errors |
+| `casr-cluster` | Deduplicate (`-d`) and cluster (`-c`) report collections |
+| `casr-cli` | Interactive TUI viewer and SARIF exporter |
+| `casr-afl` | End-to-end triage pipeline for AFL++ and Sharpfuzz crashes |
+| `casr-libfuzzer` | End-to-end triage pipeline for libFuzzer, LibAFL, and compatible fuzzers |
+| `casr-dojo` | Upload unique reports to DefectDojo (requires `dojo` feature) |
+
+All tools are built on top of **libcasr**, which handles stack-trace parsing, severity classification, deduplication logic, and JSON serialization. You can use libcasr directly as a Rust crate if you want to embed crash analysis in your own tooling.
+
+## Supported Architectures
+
+CASR's severity estimation works on the following CPU architectures:
+
+- **x86** (32-bit)
+- **x86\_64** (64-bit)
+- **ARM32**
+- **AArch64**
+- **rv32g** (RISC-V 32-bit)
+- **rv64g** (RISC-V 64-bit)
+
+## Supported Languages
+
+libcasr can parse crashes originating from programs written in:
+
+- C / C++
+- C#
+- Go
+- Java
+- JavaScript
+- Lua
+- Python
+- Rust
+
+Language-specific tools (`casr-python`, `casr-java`, `casr-js`, `casr-csharp`, `casr-lua`) wrap libcasr and understand the respective runtime's stack trace format, exception model, and fuzzing harness conventions.
+
+## Running CASR in Docker
+
+CASR disables address-space randomization for better deduplication accuracy and uses `ptrace` to attach GDB. When running inside a container, you must pass extra capabilities to Docker.
+
+<Note>
+  Start your container with `--cap-add=SYS_PTRACE --security-opt seccomp=unconfined`, otherwise `casr-gdb` and ASLR-disabling features will not work correctly.
+</Note>
+
+```bash
+docker run --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -it my-casr-image
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Install CASR from crates.io, a prebuilt binary, or build from source.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Compile a test program, generate your first crash report, and run the triage pipeline end to end.
+  </Card>
+</CardGroup>

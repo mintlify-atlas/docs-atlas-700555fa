@@ -1,0 +1,285 @@
+---
+title: "CASR Report Format (.casrep and SARIF)"
+sidebarTitle: "Report Format"
+description: "Complete reference for the .casrep JSON crash report format and SARIF export, including every CrashReport field and an annotated example."
+---
+
+CASR stores crash analysis results as **`.casrep` files** — standard JSON
+documents that can be read by any JSON-aware tool, loaded into `casr-cli` for
+interactive inspection, processed programmatically via `libcasr`, or converted
+to SARIF for IDE integration. Every tool in the CASR suite (e.g., `casr-san`,
+`casr-gdb`, `casr-core`, language-specific tools) produces the same `.casrep`
+schema, making it straightforward to write post-processing scripts that work
+regardless of the crash source.
+
+---
+
+## CrashReport Fields
+
+The root JSON object corresponds to the `CrashReport` struct in
+[`libcasr::report`](https://docs.rs/libcasr/latest/libcasr/report/struct.CrashReport.html).
+All fields use their serialised JSON names (PascalCase).
+
+<Note>
+  Fields with no collected value are omitted from the serialised output rather
+  than written as `null` or an empty string / array. An absent field is
+  equivalent to the default (empty string or empty array).
+</Note>
+
+### System Information
+
+| JSON Field | Type | Description |
+|---|---|---|
+| `Date` | `string` | Date and time of the crash in RFC 3339 format with microsecond precision (e.g., `"2024-03-15T10:22:31.418262+00:00"`). |
+| `Uname` | `string` | Full output of `uname -a` at the time of the crash. |
+| `OS` | `string` | Operating system name (e.g., `"Ubuntu"`). Determined via `lsb_release -si` on Linux, `sw_vers --productName` on macOS. |
+| `OSRelease` | `string` | OS release version (e.g., `"22.04"`). Determined via `lsb_release -sr` on Linux, `sw_vers -productVersion` on macOS. |
+| `Architecture` | `string` | System architecture string as reported by `dpkg --print-architecture` (e.g., `"amd64"`). |
+
+### Process Information
+
+| JSON Field | Type | Description |
+|---|---|---|
+| `ExecutablePath` | `string` | Resolved path to the crashed executable, read from `/proc/<pid>/exe`. For interpreted scripts this is the script path. |
+| `ProcCmdline` | `string` | Full command line of the process, from `/proc/<pid>/cmdline`. |
+| `Stdin` | `string` | Path to the file used as standard input for the target (if any). |
+| `ProcEnviron` | `string[]` | Subset of the process environment variables from `/proc/<pid>/environ`. Sensitive variables (tokens, passwords, CI secrets, SSH keys, etc.) are automatically stripped. |
+| `ProcStatus` | `string[]` | Contents of `/proc/<pid>/status`, one entry per line. |
+| `ProcMaps` | `string[]` | Memory map of the process in GDB format, derived from `/proc/<pid>/maps`. Each entry is a line of the form `0x<start> 0x<end> 0x<size> 0x<offset> <path>`. |
+| `ProcFiles` | `string[]` | Open file descriptors from `/proc/<pid>/fd`, excluding pseudo-terminals (`/dev/pts/`) and sockets. |
+| `NetworkConnections` | `string[]` | Open network connections involving the crashed process (`ss -tuap` filtered by PID). |
+
+### Package Information
+
+| JSON Field | Type | Description |
+|---|---|---|
+| `Package` | `string` | Debian package name that owns the executable (populated via `dpkg -S`). |
+| `PackageVersion` | `string` | Version of the installed package. |
+| `PackageArchitecture` | `string` | Architecture of the installed package. |
+| `PackageDescription` | `string` | Short description from `dpkg -l`. |
+
+### Crash Classification
+
+| JSON Field | Type | Description |
+|---|---|---|
+| `CrashSeverity` | `ExecutionClass` | Structured severity classification. See [ExecutionClass fields](#executionclass-fields) below. |
+| `CrashLine` | `string` | The most relevant source location or binary offset responsible for the crash. Format: `source/file.c:line:column` if debug info is available, otherwise `binary+0xoffset`. |
+| `Source` | `string[]` | Up to 10 lines of surrounding source code centred on `CrashLine`. The crash line is prefixed with `---->`. |
+
+### Stack Trace and Registers
+
+| JSON Field | Type | Description |
+|---|---|---|
+| `Stacktrace` | `string[]` | Raw stack trace lines for the crashed thread. The exact format depends on the analysis tool (ASAN, GDB, Java, etc.). |
+| `Registers` | `object` | Snapshot of CPU registers at the time of the crash (key: register name, value: integer). Only populated for GDB-based analysis with disassembly. |
+| `Disassembly` | `string[]` | Up to 16 disassembled instructions around the crash PC (populated by `casr-gdb` and `casr-core`). |
+
+### Sanitizer and Language Reports
+
+These fields hold the raw output produced by the respective sanitiser or
+language runtime. At most one of these will be non-empty for any given crash.
+
+| JSON Field | Type | Description |
+|---|---|---|
+| `AsanReport` | `string[]` | Raw AddressSanitizer report lines. |
+| `MsanReport` | `string[]` | Raw MemorySanitizer report lines. |
+| `UbsanReport` | `string[]` | Raw UndefinedBehaviorSanitizer report lines. |
+| `PythonReport` | `string[]` | Python exception traceback. |
+| `JavaReport` | `string[]` | Java exception and stack trace. |
+| `GoReport` | `string[]` | Go runtime panic output. |
+| `RustReport` | `string[]` | Rust panic output and backtrace. |
+| `JsReport` | `string[]` | JavaScript uncaught exception output. |
+| `CSharpReport` | `string[]` | C# unhandled exception output. |
+| `LuaReport` | `string[]` | Lua error output. |
+
+---
+
+## ExecutionClass Fields
+
+The `CrashSeverity` object uses the `ExecutionClass` structure:
+
+| JSON Field | Rust Field | Type | Description |
+|---|---|---|---|
+| `Type` | `severity` | `string` | Exploitability tier: `"EXPLOITABLE"`, `"PROBABLY_EXPLOITABLE"`, `"NOT_EXPLOITABLE"`, or `"UNDEFINED"`. |
+| `ShortDescription` | `short_description` | `string` | Machine-readable class name (e.g., `"heap-buffer-overflow(write)"`). |
+| `Description` | `description` | `string` | One-line human-readable description of the class. |
+| `Explanation` | `explanation` | `string` | Full technical explanation of what the crash indicates about exploitability. |
+
+For the complete list of all defined classes, see the
+[Severity Classes reference](/reference/severity-classes).
+
+---
+
+## Example .casrep File
+
+The following is a representative `.casrep` produced by `casr-san` for an
+AddressSanitizer heap-buffer-overflow:
+
+```json
+{
+  "Date": "2024-03-15T10:22:31.418262+00:00",
+  "Uname": "Linux fuzzer-host 6.5.0-25-generic #25-Ubuntu SMP x86_64 GNU/Linux",
+  "OS": "Ubuntu",
+  "OSRelease": "22.04",
+  "Architecture": "amd64",
+  "ExecutablePath": "/usr/bin/target_binary",
+  "ProcCmdline": "/usr/bin/target_binary /tmp/crash-input",
+  "Stdin": "/tmp/crash-input",
+  "ProcEnviron": [
+    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "ASAN_OPTIONS=abort_on_error=0:symbolize=1"
+  ],
+  "ProcStatus": [
+    "Name:\ttarget_binary",
+    "State:\tZ (zombie)",
+    "Pid:\t12345"
+  ],
+  "ProcMaps": [
+    "0x555555554000     0x555555600000     0xac000        0x0 /usr/bin/target_binary",
+    "0x7ffff7a00000     0x7ffff7bca000     0x1ca000       0x0 /lib/x86_64-linux-gnu/libc.so.6"
+  ],
+  "CrashSeverity": {
+    "Type": "EXPLOITABLE",
+    "ShortDescription": "heap-buffer-overflow(write)",
+    "Description": "Heap buffer overflow",
+    "Explanation": "The target writes data past the end, or before the beginning, of the intended heap buffer."
+  },
+  "Stacktrace": [
+    "    #0 0x555555578c41 in process_input /src/target/parser.c:142:5",
+    "    #1 0x55555557a013 in main /src/target/main.c:87:3",
+    "    #2 0x7ffff7a29d8f in __libc_start_call_main ../sysdeps/nptl/libc_start_call_main.h:58:16"
+  ],
+  "CrashLine": "/src/target/parser.c:142:5",
+  "Source": [
+    "    138        size_t n = get_length(buf);\n",
+    "    139        char *out = malloc(n);\n",
+    "    140        for (size_t i = 0; i <= n; i++) {\n",
+    "--> 141            out[i] = buf[i];\n",
+    "    142        }\n"
+  ],
+  "AsanReport": [
+    "==12345==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x602000000051",
+    "WRITE of size 1 at 0x602000000051 thread T0",
+    "    #0 0x555555578c41 in process_input /src/target/parser.c:142:5",
+    "    #1 0x55555557a013 in main /src/target/main.c:87:3",
+    "SUMMARY: AddressSanitizer: heap-buffer-overflow /src/target/parser.c:142:5 in process_input"
+  ]
+}
+```
+
+<Tip>
+  Use `casr-cli` to view a `.casrep` interactively with a text-based tree UI:
+
+  ```bash
+  casr-cli report.casrep
+  ```
+
+  Or print the report to stdout directly:
+
+  ```bash
+  casr-cli --view stdout report.casrep
+  ```
+</Tip>
+
+---
+
+## SARIF Export
+
+CASR reports can be converted to [SARIF (Static Analysis Results Interchange
+Format)](https://sarifweb.azurewebsites.net/) 2.1.0 using `casr-cli`. SARIF is
+a standard JSON schema widely supported by IDEs (VS Code, CLion, Visual Studio),
+CI platforms (GitHub Code Scanning, Azure DevOps), and security dashboards.
+
+<Note>
+  SARIF export requires the `serde` feature to be enabled in `libcasr`. The
+  official pre-built binaries always include this feature.
+</Note>
+
+### Generating a SARIF Report
+
+Provide a directory of `.casrep` files and an output path:
+
+```bash
+casr-cli --sarif results.sarif \
+         --source-root /path/to/source \
+         /path/to/casrep/directory
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--sarif <OUTPUT>` | Yes (to trigger SARIF mode) | Path for the generated SARIF file. |
+| `--source-root <PATH>` | Yes (when `--sarif` is set) | The root of the source tree as it appears in the `.casrep` `CrashLine` fields. Used to construct artifact URIs in the SARIF output so that IDEs can locate the correct file. |
+| `--tool <NAME>` | No (default: `"CASR"`) | Name of the tool written to the SARIF `tool.driver.name` field. Useful when integrating with a specific fuzzer pipeline (e.g., `"AFL++"`, `"libFuzzer"`). |
+
+### Example
+
+```bash
+# Convert all .casrep files in the crashes/ directory to SARIF,
+# tagging the tool as "AFL++" and mapping source paths under /home/user/project
+casr-cli \
+  --sarif ./report.sarif \
+  --source-root /home/user/project \
+  --tool "AFL++" \
+  ./crashes/
+```
+
+The resulting `report.sarif` file follows the SARIF 2.1.0 schema:
+
+```json
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "AFL++",
+          "rules": [
+            {
+              "id": "F30",
+              "name": "heap-buffer-overflow(write)",
+              "shortDescription": { "text": "Heap buffer overflow" },
+              "fullDescription": {
+                "text": "The target writes data past the end, or before the beginning, of the intended heap buffer."
+              },
+              "defaultConfiguration": { "level": "error" }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "F30",
+          "level": "error",
+          "message": { "text": "heap-buffer-overflow(write)" },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/target/parser.c",
+                  "uriBaseId": "%SRCROOT%"
+                },
+                "region": { "startLine": 142, "startColumn": 5 }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Loading SARIF in VS Code
+
+1. Install the [SARIF Viewer extension](https://marketplace.visualstudio.com/items?itemName=MS-SarifVSCode.sarif-viewer).
+2. Open the generated `.sarif` file; VS Code will display findings inline in the
+   source editor.
+3. Set the `%SRCROOT%` variable in the extension settings to the project source
+   root if the paths don't resolve automatically.
+
+<Tip>
+  SARIF can also be uploaded directly to GitHub's Code Scanning feature using
+  the `github/codeql-action/upload-sarif` action, making CASR findings visible
+  in the **Security → Code scanning alerts** tab of any repository.
+</Tip>

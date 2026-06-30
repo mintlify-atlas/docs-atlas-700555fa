@@ -1,0 +1,291 @@
+---
+title: "LibCASR Rust Library API Reference"
+sidebarTitle: "LibCASR"
+description: "API reference for libcasr, the Rust library powering CASR — covering modules, features, Cargo setup, and a quick integration example."
+---
+
+**`libcasr`** is the Rust library at the heart of every CASR tool. It exposes
+a public API for parsing stack traces, collecting and serialising crash reports,
+triaging crashes via deduplication and clustering, and estimating crash severity.
+The library handles crashes from multiple sources — AddressSanitizer,
+MemorySanitizer, UndefinedBehaviorSanitizer, GDB — and supports C/C++, C#, Go,
+Java, JavaScript, Lua, Python, and Rust targets.
+
+The library is published on [crates.io](https://crates.io/crates/libcasr) and
+fully documented on [docs.rs/libcasr](https://docs.rs/libcasr).
+
+---
+
+## Adding to Cargo.toml
+
+```toml
+# Minimal — core types and parsers, no file I/O or severity estimation
+libcasr = { version = "2.13.1" }
+
+# With JSON serialisation (.casrep / SARIF) and GDB severity estimation
+libcasr = { version = "2.13.1", features = ["serde", "exploitable"] }
+```
+
+---
+
+## Features
+
+| Feature | Enables | Extra Dependencies |
+|---|---|---|
+| `exploitable` | Severity estimation for GDB-collected crashes using disassembly and binary analysis. Adds the `severity`, `gdb`, and taint-tracking functionality. | [`capstone`](https://crates.io/crates/capstone) (disassembly), [`goblin`](https://crates.io/crates/goblin) (binary parsing) |
+| `serde` | JSON serialisation and deserialisation of `CrashReport` (`.casrep` files) and SARIF report generation via the `sarif` module. | [`serde`](https://crates.io/crates/serde), [`serde_json`](https://crates.io/crates/serde_json), [`lexiclean`](https://crates.io/crates/lexiclean) |
+
+<Note>
+  The official CASR binaries are always built with both `exploitable` and `serde`
+  enabled. When using `libcasr` as a library dependency, enable only the features
+  you need to keep compile times and binary sizes low.
+</Note>
+
+---
+
+## Public Modules
+
+### `report`
+
+The central module. Contains the `CrashReport` struct that aggregates all
+information about a single crash: system metadata, process state, sanitiser
+output, stack traces, registers, disassembly, and the severity classification.
+
+Key items:
+- **`CrashReport`** — main struct; all fields have serde-rename'd JSON names
+  (e.g., `execution_class` serialises as `"CrashSeverity"`).
+- **`dedup_reports(casreps: &[CrashReport]) -> Result<Vec<bool>>`** — deduplicates
+  a slice of reports; returns a boolean mask (`true` = unique, `false` = duplicate).
+- **`cluster_reports(casreps: &[CrashReport]) -> Result<Vec<usize>>`** — clusters
+  a slice of reports; returns a cluster-number vector.
+
+---
+
+### `execution_class`
+
+Defines the crash severity type system.
+
+Key items:
+- **`ExecutionClass`** — struct with four fields: `severity` (`Type`),
+  `short_description` (`ShortDescription`), `description` (`Description`),
+  `explanation` (`Explanation`).
+- **`CLASSES`** — a `&[(&str, &str, &str, &str); 75]` constant holding all
+  defined severity classes as raw tuples `(type, short_desc, description, explanation)`.
+- **`ExecutionClass::find(short_desc: &str) -> Result<ExecutionClass>`** — look up
+  a class by its `ShortDescription`.
+- **`ExecutionClass::san_find(short_desc, rw, near_null) -> Result<ExecutionClass>`** —
+  sanitiser-aware lookup that resolves `(read)`/`(write)` and near-NULL variants
+  automatically.
+- **`is_near_null(value: u64) -> bool`** — returns `true` when an address is below
+  64 KiB (the near-NULL heuristic threshold).
+
+---
+
+### `stacktrace`
+
+Provides stack trace parsing, filtering, deduplication, and clustering primitives.
+
+Key items:
+
+| Item | Kind | Description |
+|---|---|---|
+| `Stacktrace` | type alias | Re-export of `gdb_command::stacktrace::Stacktrace` — a `Vec<StacktraceEntry>`. |
+| `StacktraceEntry` | type alias | Re-export of `gdb_command::stacktrace::StacktraceEntry` — one frame. |
+| `DebugInfo` | type alias | Re-export of `gdb_command::stacktrace::DebugInfo` — file/line/column debug info. |
+| `ParseStacktrace` | trait | Implement `extract_stacktrace` and `parse_stacktrace_entry` to add a new language or format parser. |
+| `Filter` | trait | Implement `filter` and `init_frame_filter` to remove noise frames from a trace. |
+| `CrashLineExt` | trait | Adds `.crash_line() -> Result<CrashLine>` to `Stacktrace`. |
+| `similarity(a, b) -> f64` | fn | Computes a similarity score between two `Stacktrace` values using the PDM algorithm. |
+| `dedup_stacktraces(traces) -> Vec<bool>` | fn | Returns a boolean mask — `true` for the first occurrence of each unique trace. |
+| `THRESHOLD` | `f64` constant | Default cluster diameter threshold (`0.3`). Used by `cluster_stacktraces`. |
+| `init_ignored_frames!(lang, ...)` | macro | Convenience macro to register language-specific frame-filter regexes. |
+| `STACK_FRAME_FUNCTION_IGNORE_REGEXES` | static `RwLock<Vec<String>>` | Runtime-mutable list of function-name regexes to ignore when filtering. |
+| `STACK_FRAME_FILEPATH_IGNORE_REGEXES` | static `RwLock<Vec<String>>` | Runtime-mutable list of file-path regexes to ignore when filtering. |
+
+---
+
+### `cluster`
+
+Higher-level clustering API that operates on file-system paths to `.casrep` files.
+
+Key items:
+- **`ReportInfo`** — type alias for `(PathBuf, (Stacktrace, String))` (path,
+  stacktrace, crash line).
+- **`Cluster`** — holds a cluster number, the set of report paths, their stack
+  traces, the cluster diameter, and a deduplication map of crash lines.
+- **`Cluster::cluster_reports(reports, offset, dedup)`** — performs hierarchical
+  clustering, returns a `HashMap<usize, Cluster>` keyed by cluster number along
+  with before/after counts.
+- **`Relation`** — enum (`Dup`, `Inner(f64)`, `Outer`) describing how a new
+  report relates to an existing cluster.
+
+---
+
+### `asan`
+
+Parses AddressSanitizer (and MemorySanitizer) stack traces and extracts the
+sanitiser error type for severity classification. Implements `ParseStacktrace`
+for ASAN-formatted output.
+
+---
+
+### `ubsan`
+
+Parses UndefinedBehaviorSanitizer reports and maps UBSAN error types to
+`ExecutionClass` values. Implements `Exception` for UBSAN output.
+
+---
+
+### `cpp` · `rust` · `python` · `java` · `js` · `csharp` · `go` · `lua`
+
+Each module implements `ParseStacktrace` for the corresponding language or
+runtime format. They are selected automatically by `CrashReport::filtered_stacktrace`
+based on which `*Report` field is non-empty in the report.
+
+---
+
+### `gdb`
+
+Available with the **`exploitable`** feature. Implements GDB-specific stack
+trace parsing and contains the `exploitable` sub-module, which performs
+disassembly-based taint analysis to assign `EXPLOITABLE` or
+`PROBABLY_EXPLOITABLE` classes to GDB-collected crashes.
+
+<Warning>
+  The `exploitable` analysis relies on native disassembly via `capstone` and ELF
+  binary parsing via `goblin`. It is tested primarily on Linux. On macOS, some
+  GDB-related features (especially those requiring `/proc` or ELF internals) may
+  not work correctly.
+</Warning>
+
+---
+
+### `sarif`
+
+Available with the **`serde`** feature. Contains `SarifReport`, which aggregates
+one or more `CrashReport` instances into a SARIF 2.1.0 JSON document.
+
+Key items:
+- **`SarifReport::new()`** — creates a blank SARIF document with the required
+  `$schema` and `version` fields.
+- **`SarifReport::set_name(name)`** — sets the `tool.driver.name` field.
+- **`SarifReport::add_casr_report(report, source_root)`** — appends a
+  `CrashReport` as a SARIF result, creating or reusing rule entries from
+  `CLASSES`.
+
+---
+
+### `severity`
+
+Provides the `Severity` trait:
+
+```rust
+pub trait Severity {
+    fn severity(&self) -> Result<ExecutionClass>;
+}
+```
+
+Implement this trait on any type that can determine its own crash severity. The
+`gdb::exploitable` module implements it for GDB crash state objects.
+
+---
+
+### `constants`
+
+Per-language arrays of regex strings used to filter noise frames from stack
+traces. These arrays are consumed by `Filter::init_frame_filter` via the
+`init_ignored_frames!` macro.
+
+Exported constants include:
+`STACK_FRAME_FUNCTION_IGNORE_REGEXES_CPP`, `_RUST`, `_PYTHON`, `_JAVA`, `_JS`,
+`_CSHARP`, `_GO`, `_LUA` and the corresponding `STACK_FRAME_FILEPATH_IGNORE_REGEXES_*`
+variants.
+
+---
+
+### `error`
+
+Defines `Error` (an enum covering IO errors, `gdb-command` errors, CASR analysis
+errors, and — with `exploitable` — `goblin` errors) and the `Result<T>` type
+alias used throughout the library.
+
+---
+
+### `exception`
+
+Provides the `Exception` trait:
+
+```rust
+pub trait Exception {
+    fn parse_exception(stream: &str) -> Option<ExecutionClass>;
+}
+```
+
+Implement this to extract a structured `ExecutionClass` from an error message
+(e.g., a sanitiser summary line or a language runtime exception header).
+
+---
+
+## Quick Start Example
+
+The following snippet loads a `.casrep` file from disk and prints its severity
+classification. Add `libcasr` with the `serde` feature to your `Cargo.toml`
+first.
+
+```toml
+[dependencies]
+libcasr = { version = "2.13.1", features = ["serde"] }
+serde_json = "1"
+```
+
+```rust
+use libcasr::report::CrashReport;
+use std::fs;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Read and deserialise the .casrep file
+    let raw = fs::read_to_string("crash.casrep")?;
+    let report: CrashReport = serde_json::from_str(&raw)?;
+
+    // Print the crash location
+    println!("Crash line : {}", report.crashline);
+
+    // Print the severity classification
+    let sev = &report.execution_class;
+    println!("Severity   : {}", sev.severity);
+    println!("Class      : {}", sev.short_description);
+    println!("Description: {}", sev.description);
+    println!("Explanation: {}", sev.explanation);
+
+    // Obtain a filtered (noise-removed) stacktrace
+    let trace = report.filtered_stacktrace()?;
+    println!("\nFiltered stacktrace ({} frames):", trace.len());
+    for (i, frame) in trace.iter().enumerate() {
+        println!("  #{i}  {}", frame.function);
+    }
+
+    Ok(())
+}
+```
+
+<Tip>
+  The `init_ignored_frames!` macro must be called before `filtered_stacktrace`
+  to register language-specific noise filters. For C/C++ crashes analysed by
+  ASAN, call:
+
+  ```rust
+  use libcasr::stacktrace::Filter;
+  use libcasr::constants::*;
+
+  libcasr::init_ignored_frames!("cpp", "rust");
+  ```
+</Tip>
+
+---
+
+## Further Reading
+
+- **API docs**: [docs.rs/libcasr](https://docs.rs/libcasr)
+- **Source**: [github.com/ispras/casr](https://github.com/ispras/casr)
+- **Severity classes**: [Severity Classes reference](/reference/severity-classes)
+- **Report schema**: [Report Format reference](/reference/report-format)

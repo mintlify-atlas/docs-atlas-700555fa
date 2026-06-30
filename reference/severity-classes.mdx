@@ -1,0 +1,194 @@
+---
+title: "CASR Severity Classification Reference"
+sidebarTitle: "Severity Classes"
+description: "Complete reference for all CASR crash severity classes across the three exploitability tiers: EXPLOITABLE, PROBABLY_EXPLOITABLE, and NOT_EXPLOITABLE."
+---
+
+CASR assigns every crash a severity class drawn from three ordered tiers —
+**EXPLOITABLE**, **PROBABLY\_EXPLOITABLE**, and **NOT\_EXPLOITABLE** — plus a
+catch-all **UNDEFINED** class for crashes that cannot be classified. The
+classification scheme mirrors the way security researchers manually triage
+crashes: the highest tier signals an immediate, high-confidence control-flow
+hijack risk, the middle tier requires additional analysis, and the lowest tier
+covers crashes that are still potentially harmful (e.g., denial-of-service) but
+lack direct evidence of exploitability.
+
+<Note>
+  The GDB-based severity classes (`SegFaultOnPc`, `ReturnAv`, `BranchAv`,
+  `CallAv`, `DestAv`, and their tainted variants) are inspired by the open-source
+  [gdb-exploitable](https://github.com/jfoote/exploitable) project originally
+  authored by Jonathan Foote.
+</Note>
+
+---
+
+## EXPLOITABLE
+
+Crashes in this tier show direct evidence that an attacker can redirect control
+flow. They represent the highest-priority findings and should be investigated
+immediately.
+
+<AccordionGroup>
+  <Accordion title="View all 17 EXPLOITABLE classes">
+
+| Short Description | Description | Explanation |
+|---|---|---|
+| `SegFaultOnPc` | Segmentation fault on program counter | The target tried to access data at an address that matches the program counter. This likely indicates that the program counter contents are tainted and can be controlled by an attacker. |
+| `ReturnAv` | Access violation during return instruction | The target crashed on a return instruction, which likely indicates stack corruption. |
+| `BranchAv` | Access violation during branch instruction | The target crashed on a branch instruction, which may indicate that the control flow is tainted. |
+| `CallAv` | Access violation during call instruction | The target crashed on a call instruction, which may indicate that the control flow is tainted. |
+| `DestAv` | Access violation on destination operand | The target crashed on an access violation at an address matching the destination operand of the instruction. This likely indicates a write access violation, which means the attacker may control the write address and/or value. |
+| `BranchAvTainted` | Access violation during branch instruction from tainted source | The target crashed on loading from memory (SourceAv). After taint tracking, the target operand of the branch instruction could be tainted. |
+| `CallAvTainted` | Access violation during call instruction from tainted source | The target crashed on loading from memory (SourceAv). After taint tracking, the target operand of the call instruction could be tainted. |
+| `DestAvTainted` | Access violation on destination operand from tainted source | The target crashed on loading from memory (SourceAv). After taint tracking, the address operand of a memory store instruction could be tainted. This likely indicates a write access violation, which means the attacker may control the write address and/or value. |
+| `heap-buffer-overflow(write)` | Heap buffer overflow | The target writes data past the end, or before the beginning, of the intended heap buffer. |
+| `global-buffer-overflow(write)` | Global buffer overflow | The target writes data past the end, or before the beginning, of the intended global buffer. |
+| `stack-use-after-scope(write)` | Use of out-of-scope stack memory | The target crashed when writing on a stack address outside the lexical scope of a variable's lifetime. |
+| `stack-use-after-return(write)` | Use of stack memory after return | The target crashed when writing to a stack memory of a returned function. |
+| `stack-buffer-overflow(write)` | Stack buffer overflow | The target writes data past the end, or before the beginning, of the intended stack buffer. |
+| `stack-buffer-underflow(write)` | Stack buffer underflow | The target writes to a buffer using an index or pointer that references a memory location prior to the beginning of the buffer. |
+| `heap-use-after-free(write)` | Use of deallocated memory | The target crashed when writing to memory after it has been freed. |
+| `container-overflow(write)` | Container overflow | The target crashed when writing to memory inside the allocated heap region but outside of the current container bounds. |
+| `param-overlap` | Overlapping memory ranges | Call to function disallowing overlapping memory ranges. |
+
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## PROBABLY\_EXPLOITABLE
+
+Crashes in this tier may allow control-flow hijacking but require further
+(often manual) analysis to confirm. Common reasons include near-NULL addresses
+that could be either a NULL dereference or a low-address attacker-controlled
+write.
+
+<AccordionGroup>
+  <Accordion title="View all 21 PROBABLY_EXPLOITABLE classes">
+
+| Short Description | Description | Explanation |
+|---|---|---|
+| `BadInstruction` | Bad instruction | The target tried to execute a malformed or privileged instruction. This may indicate that the control flow is tainted. |
+| `SegFaultOnPcNearNull` | Segmentation fault on program counter near NULL | The target tried to access data at an address that matches the program counter. This may indicate that the program counter contents are tainted, however it may also indicate a simple NULL dereference. |
+| `BranchAvNearNull` | Access violation near NULL during branch instruction | The target crashed on a branch instruction. This may indicate tainted control flow, however there is a chance it could be a NULL dereference. |
+| `CallAvNearNull` | Access violation near NULL during call instruction | The target crashed on a call instruction. This may indicate tainted control flow, however there is a chance it could be a NULL dereference. |
+| `HeapError` | Heap error | The target program is aborted due to an error produced by heap allocator functions. |
+| `StackGuard` | Stack buffer overflow | The target program is aborted due to stack cookie overwrite. |
+| `DestAvNearNull` | Access violation near NULL on destination operand | The target crashed on a write access violation near NULL. This likely indicates a write AV, however there is a chance it could be a NULL dereference. |
+| `heap-buffer-overflow` | Heap buffer overflow | The target attempts to read or write data past the end, or before the beginning, of the intended heap buffer. |
+| `global-buffer-overflow` | Global buffer overflow | The target attempts to read or write data past the end, or before the beginning, of the intended global buffer. |
+| `stack-use-after-scope` | Use of out-of-scope stack memory | The target crashed when using a stack address outside the lexical scope of a variable's lifetime. |
+| `use-after-poison` | Using poisoned memory | The target crashed on trying to use memory that was previously poisoned. |
+| `stack-use-after-return` | Use of stack memory after return | The target crashed when using a stack memory of a returned function. |
+| `stack-buffer-overflow` | Stack buffer overflow | The target attempts to read or write data past the end, or before the beginning, of the intended stack buffer. |
+| `stack-buffer-underflow` | Stack buffer underflow | The target is using a buffer with an index or pointer that references a memory location prior to the beginning of the buffer. |
+| `heap-use-after-free` | Use of deallocated memory | The target crashed when using memory after it has been freed. |
+| `container-overflow` | Container overflow | The target crashed when using memory inside the allocated heap region but outside of the current container bounds. |
+| `negative-size-param` | Use of negative size | Negative size used when accessing memory. |
+| `calloc-overflow` | Calloc parameters overflow | Overflow in calloc parameters. |
+| `reallocarray-overflow` | Realloc parameters overflow | Overflow in realloc parameters. |
+| `pvalloc-overflow` | Pvalloc parameters overflow | Overflow in pvalloc parameters. |
+| `overwrites-const-input` | Attempt to overwrite constant input | Fuzz target overwrites its constant input. |
+
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## NOT\_EXPLOITABLE
+
+Crashes in this tier lack direct evidence of a control-flow hijack. They still
+warrant investigation — many represent denial-of-service conditions or
+information leaks — but are lower priority than the tiers above.
+
+<AccordionGroup>
+  <Accordion title="View all 31 NOT_EXPLOITABLE classes">
+
+| Short Description | Description | Explanation |
+|---|---|---|
+| `SourceAv` | Access violation on source operand | The target crashed on an access violation at an address matching the source operand of the current instruction. This likely indicates a read access violation. |
+| `AbortSignal` | Abort signal | The target is stopped on a SIGABRT. SIGABRTs are often generated by libc and compiled check-code to indicate potentially critical conditions. |
+| `AccessViolation` | Access violation | The target crashed due to an access violation but there is not enough additional information available to determine severity. Manual analysis is needed. |
+| `SourceAvNearNull` | Access violation near NULL on source operand | The target crashed on a read access violation near NULL, which may mean the application crashed on a simple NULL dereference with no immediate effect on control of the processor. |
+| `SafeFunctionCheck` | Safe function check guard | The target program is aborted due to a safe function check guard: `_chk()`. |
+| `FPE` | Arithmetic exception | The target crashed due to an arithmetic floating point exception. |
+| `StackOverflow` | Stack overflow | The target crashed on an access violation where the faulting instruction's mnemonic and the stack pointer indicate a stack overflow. |
+| `double-free` | Deallocation of freed memory | The target crashed while trying to deallocate already freed memory. |
+| `bad-free` | Invalid memory deallocation | The target crashed on attempting free on an address which was not malloc()-ed. |
+| `alloc-dealloc-mismatch` | Invalid use of alloc/dealloc functions | Mismatch between allocation and deallocation APIs. |
+| `heap-buffer-overflow(read)` | Heap buffer overflow | The target reads data past the end, or before the beginning, of the intended heap buffer. |
+| `global-buffer-overflow(read)` | Global buffer overflow | The target reads data past the end, or before the beginning, of the intended global buffer. |
+| `stack-use-after-scope(read)` | Use of out-of-scope stack memory | The target crashed when reading from a stack address outside the lexical scope of a variable's lifetime. |
+| `stack-use-after-return(read)` | Use of stack memory after return | The target crashed when reading from a stack memory of a returned function. |
+| `stack-buffer-overflow(read)` | Stack buffer overflow | The target reads data past the end, or before the beginning, of the intended stack buffer. |
+| `stack-buffer-underflow(read)` | Stack buffer underflow | The target reads from a buffer using an index or pointer that references a memory location prior to the beginning of the buffer. |
+| `heap-use-after-free(read)` | Use of deallocated memory | The target crashed when reading from memory after it has been freed. |
+| `container-overflow(read)` | Container overflow | The target crashed when reading from memory inside the allocated heap region but outside of the current container bounds. |
+| `initialization-order-fiasco` | Bad initialization order | Initializer for a global variable accesses a dynamically initialized global from another translation unit, which is not yet initialized. |
+| `new-delete-type-mismatch` | Invalid use of new/delete functions | Deallocation size different from allocation size. |
+| `bad-malloc_usable_size` | Bad function use | Invalid argument to `malloc_usable_size`. |
+| `odr-violation` | Multiple symbol definition | Symbol defined in multiple translation units. |
+| `memory-leaks` | Memory leaks | The target does not sufficiently track and release allocated memory after use, which slowly consumes remaining memory. |
+| `invalid-allocation-alignment` | Invalid alignment | Invalid allocation alignment. |
+| `invalid-aligned-alloc-alignment` | Invalid alignment | Invalid alignment requested in `aligned_alloc`. |
+| `invalid-posix-memalign-alignment` | Invalid alignment | Invalid alignment requested in `posix_memalign`. |
+| `allocation-size-too-big` | Allocation size too big | Requested allocation size exceeds maximum supported size. |
+| `out-of-memory` | Memory limit exceeded | The target has exceeded the memory limit. |
+| `fuzz target exited` | Fuzz target exited | Fuzz target exited. |
+| `timeout` | Target timeout expired | Timeout after several seconds. |
+| `use-of-uninitialized-value` | Use of uninitialized value | The target attempted to access memory that was not initialized. |
+
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Supported Architectures
+
+GDB-based severity estimation (taint-tracking classes such as `BranchAvTainted`,
+`CallAvTainted`, `DestAvTainted`, and PC-based classes) requires disassembly
+analysis. The following architectures are supported:
+
+| Architecture | Notes |
+|---|---|
+| `x86` | 32-bit Intel/AMD |
+| `x86_64` | 64-bit Intel/AMD (most common) |
+| `arm32` | 32-bit ARM |
+| `aarch64` | 64-bit ARM (ARM64) |
+| `rv32g` | 32-bit RISC-V (general-purpose) |
+| `rv64g` | 64-bit RISC-V (general-purpose) |
+
+<Note>
+  Architecture detection uses the `Architecture` field in the `.casrep` report
+  (populated from `dpkg --print-architecture` or equivalent). If the field is
+  empty, CASR falls back to analysing the crash without architecture-specific
+  taint tracking.
+</Note>
+
+---
+
+## Reading Severity in a Report
+
+Every `.casrep` file contains a `CrashSeverity` object with four fields that
+map directly to the tables above:
+
+<Tip>
+  Open any `.casrep` file and locate the `CrashSeverity` object to see the full
+  classification:
+
+  ```json
+  "CrashSeverity": {
+    "Type": "EXPLOITABLE",
+    "ShortDescription": "heap-buffer-overflow(write)",
+    "Description": "Heap buffer overflow",
+    "Explanation": "The target writes data past the end, or before the beginning, of the intended heap buffer."
+  }
+  ```
+
+  | Field | Maps to |
+  |---|---|
+  | `Type` | Tier: `EXPLOITABLE`, `PROBABLY_EXPLOITABLE`, `NOT_EXPLOITABLE`, or `UNDEFINED` |
+  | `ShortDescription` | The class name used in the tables above |
+  | `Description` | Human-readable one-line description |
+  | `Explanation` | Full technical explanation of what the crash indicates |
+</Tip>

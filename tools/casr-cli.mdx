@@ -1,0 +1,190 @@
+---
+title: "casr-cli: TUI Viewer and SARIF Report Converter"
+sidebarTitle: "casr-cli"
+description: "Browse CASR reports interactively, print joint crash statistics for a directory, or convert .casrep files into a SARIF report for IDE integration."
+---
+
+`casr-cli` is the primary interface for inspecting CASR crash reports. It can:
+
+- **View** a single `.casrep` file in an interactive terminal UI (tree or slider layout)
+  or dump it as plain text to stdout.
+- **Summarise** a directory of `.casrep` files, printing per-cluster crash counts and
+  severity breakdowns.
+- **Convert** a single report or an entire directory of reports to
+  [SARIF](https://sarifweb.azurewebsites.net/) format for loading into IDEs such as
+  VS Code or JetBrains.
+
+## Synopsis
+
+```
+Usage: casr-cli [OPTIONS] <REPORT|DIR>
+
+Arguments:
+  <REPORT|DIR>  CASR report file to view or directory with reports
+
+Options:
+  -v, --view <MODE>          View mode [default: tree] [possible values: tree, slider,
+                             stdout]
+  -u, --unique               Print only unique crash lines in joint statistics
+      --sarif <OUTPUT>       Generate SARIF report from CASR reports
+      --source-root <PATH>   Source root path in CASR reports for SARIF report generation
+      --tool <NAME>          Tool name that detected crashes/errors for SARIF report
+                             [default: CASR]
+      --strip-path <PREFIX>  Path prefix to strip from crash path in joint report
+                             statistics [env: CASR_STRIP_PATH=]
+  -h, --help                 Print help
+  -V, --version              Print version
+```
+
+## Options
+
+<ParamField path="-v, --view" type="string" default="tree">
+  View mode when opening a single `.casrep` file.
+
+  | Value    | Description |
+  |----------|-------------|
+  | `tree`   | Full-screen collapsible tree view. Navigate with arrow keys; press `q` to quit. |
+  | `slider` | Side-by-side panel view: a scrollable field list on the left, field content on the right. |
+  | `stdout` | Dump the report as human-readable text to stdout and exit. |
+</ParamField>
+
+<ParamField path="-u, --unique" type="flag">
+  When printing joint statistics for a directory, skip reports whose crash line has
+  already been counted. This gives a deduplicated view of distinct crash sites.
+</ParamField>
+
+<ParamField path="--sarif" type="path">
+  Output path for the generated SARIF file. Requires `--source-root`. When this flag is
+  provided, `casr-cli` converts reports to SARIF and exits — no TUI is shown.
+</ParamField>
+
+<ParamField path="--source-root" type="path">
+  The root directory of the source code as it appears in the `.casrep` crash lines.
+  Used by the SARIF generator to resolve file URIs. Required when `--sarif` is specified.
+</ParamField>
+
+<ParamField path="--tool" type="string" default="CASR">
+  Name of the tool that produced the crashes, embedded in the SARIF `tool.driver.name`
+  field. Useful for distinguishing findings from different fuzzers in the same SARIF
+  viewer.
+</ParamField>
+
+<ParamField path="--strip-path" type="string">
+  A path prefix to strip from crash paths when printing joint directory statistics.
+  Has no effect on SARIF generation. Can also be set via the `CASR_STRIP_PATH`
+  environment variable.
+</ParamField>
+
+## View a Single Report
+
+Open a report in the default tree view:
+
+```bash
+casr-cli casr/tests/casr_tests/casrep/test_clustering_san/load_fuzzer_crash-120697a7f5b87c03020f321c8526adf0f4bcc2dc.casrep
+```
+
+Use the slider (list) view:
+
+```bash
+casr-cli --view slider report.casrep
+```
+
+Dump to stdout (non-interactive, suitable for scripts):
+
+```bash
+casr-cli --view stdout report.casrep
+```
+
+## View Joint Statistics for a Directory
+
+Pass a directory to print a per-cluster summary. `casr-cli` recursively walks all `clN`
+subdirectories and prints each crash with its severity, description, and crash line:
+
+```bash
+casr-cli casr_reports/
+```
+
+Example output:
+
+```
+==> <cl1>
+Crash: /path/to/cl1/id:000029,...casrep
+  casrep: EXPLOITABLE: HeapBufferOverflow: load.cpp:42
+  gdb.casrep: EXPLOITABLE: DestAvNearNull: load.cpp:42
+  Similar crashes: 3
+Cluster summary -> HeapBufferOverflow: 2  DestAvNearNull: 1
+
+SUMMARY -> HeapBufferOverflow: 12  DestAvNearNull: 4  AbortSignal: 2
+```
+
+Show only unique crash lines (one entry per distinct crash site):
+
+```bash
+casr-cli --unique casr_reports/
+```
+
+Strip a common path prefix from the output:
+
+```bash
+casr-cli --strip-path /home/user/project casr_reports/
+```
+
+## Convert to SARIF
+
+Convert an entire directory of reports to a single SARIF file:
+
+```bash
+casr-cli \
+    --sarif out.sarif \
+    --tool libfuzzer \
+    --source-root /xlnt \
+    casr/tests/casr_tests/casrep/test_clustering_san
+```
+
+Convert a single report:
+
+```bash
+casr-cli \
+    --sarif single.sarif \
+    --source-root /home/user/project \
+    report.casrep
+```
+
+Specify a custom tool name matching your fuzzer:
+
+```bash
+casr-cli \
+    --sarif afl_findings.sarif \
+    --tool "AFL++" \
+    --source-root /src \
+    afl_out/
+```
+
+## Notes
+
+<Note>
+  **Loading SARIF into an IDE** — The generated `.sarif` file can be loaded directly
+  into VS Code with the
+  [SARIF Viewer extension](https://marketplace.visualstudio.com/items?itemName=MS-SarifVSCode.sarif-viewer),
+  or into JetBrains IDEs via the
+  [SARIF plugin](https://plugins.jetbrains.com/plugin/23158-sarif). Each finding links
+  back to the source line where the crash occurred, letting you navigate from the SARIF
+  report straight to the vulnerable code.
+</Note>
+
+<Note>
+  **Directory structure expected for statistics** — When pointing `casr-cli` at a
+  directory, it only processes subdirectories whose names start with `cl` (e.g. `cl1`,
+  `cl2`). If the directory contains `.casrep` files directly at the top level (no `clN`
+  subdirectories), `casr-cli` will treat the directory itself as a single implicit
+  cluster.
+</Note>
+
+<Tip>
+  Use `--view stdout` in automation scripts or CI pipelines where no terminal is
+  available:
+
+  ```bash
+  casr-cli --view stdout report.casrep | grep CrashSeverity
+  ```
+</Tip>

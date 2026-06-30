@@ -1,0 +1,134 @@
+---
+title: "casr-gdb: GDB-Based Crash Report Generation"
+sidebarTitle: "casr-gdb"
+description: "Generate CASR reports by running a target binary under GDB. Provides severity estimation, disassembly, register values, and stack traces for uninstrumented binaries."
+---
+
+`casr-gdb` runs a target binary under GDB, intercepts the crash, and produces a
+structured `.casrep` JSON report. Unlike `casr-san`, it works with binaries that are
+**not** instrumented with sanitizers, making it useful for estimating crash severity in
+production-like builds. The report includes severity classification (exploitable /
+probably exploitable / not exploitable), full stack trace, register values, disassembly
+around the faulting instruction, memory mappings, and source context where available.
+
+## Synopsis
+
+```
+Usage: casr-gdb [OPTIONS] <--stdout|--output <REPORT>> -- <ARGS>...
+
+Arguments:
+  <ARGS>...  Add "-- ./binary <arguments>" to run executable
+
+Options:
+  -o, --output <REPORT>      Path to save report. Path can be a directory, then report
+                             name is generated
+      --stdout               Print CASR report to stdout
+      --stdin <FILE>         Stdin file for program
+  -t, --timeout <SECONDS>    Timeout (in seconds) for target execution, 0 value means
+                             that timeout is disabled [default: 0]
+      --ignore <FILE>        File with regular expressions for functions and file paths
+                             that should be ignored
+      --strip-path <PREFIX>  Path prefix to strip from stacktrace and crash line
+                             [env: CASR_STRIP_PATH=]
+  -h, --help                 Print help
+  -V, --version              Print version
+```
+
+## Options
+
+<ParamField path="-o, --output" type="path">
+  Path to save the generated `.casrep` report. If the path points to an existing
+  directory, the report filename is generated automatically from the crash hash.
+</ParamField>
+
+<ParamField path="--stdout" type="flag">
+  Print the CASR report as JSON to stdout rather than writing to a file. Mutually
+  exclusive with `--output`; exactly one of the two must be provided.
+</ParamField>
+
+<ParamField path="--stdin" type="path">
+  Path to a file that will be redirected to the target program's standard input.
+</ParamField>
+
+<ParamField path="-t, --timeout" type="integer" default="0">
+  Execution timeout in seconds for the target binary. A value of `0` disables the
+  timeout entirely.
+</ParamField>
+
+<ParamField path="--ignore" type="path">
+  Path to a file containing regular expressions for function names and file paths that
+  should be excluded from stack trace analysis. See the ignore file format in
+  [casr-cluster](/tools/casr-cluster).
+</ParamField>
+
+<ParamField path="--strip-path" type="string">
+  A path prefix to strip from all stack trace entries and the crash line. Can also be
+  set via the `CASR_STRIP_PATH` environment variable.
+</ParamField>
+
+## Examples
+
+### Analyse a crash with a command-line argument
+
+Run the pre-built `test_destAv` binary with a 200-byte `A` payload and save the report:
+
+```bash
+casr-gdb -o destAv.gdb.casrep -- \
+    casr/tests/casr_tests/bin/test_destAv \
+    $(printf 'A%.s' {1..200})
+```
+
+### Print report to stdout
+
+```bash
+casr-gdb --stdout -- ./vulnerable_binary input_file
+```
+
+### Pass input via stdin
+
+```bash
+casr-gdb -o report.casrep --stdin crash_input.bin -- ./target_binary
+```
+
+### Save report to a directory
+
+When `--output` is a directory, `casr-gdb` generates the filename automatically:
+
+```bash
+mkdir crash_reports/
+casr-gdb -o crash_reports/ -- ./target_binary @@
+```
+
+### Use a timeout
+
+```bash
+casr-gdb -o report.casrep -t 60 -- ./target_binary large_input.bin
+```
+
+### Strip build prefixes from paths
+
+```bash
+casr-gdb -o report.casrep --strip-path /home/user/project \
+    -- ./build/target input.bin
+```
+
+## Notes
+
+<Note>
+  **Required for casr-afl** — `casr-gdb` (along with `casr-san`) must be present in
+  your `PATH` for `casr-afl` to work correctly. `casr-afl` invokes `casr-gdb` to
+  generate additional crash reports for uninstrumented binaries alongside ASAN reports.
+</Note>
+
+<Note>
+  **Supported architectures** — `casr-gdb` reads the ELF header of the target binary
+  and supports x86, x86-64, ARM, AArch64, and RISC-V targets. The binary must be an
+  ELF executable or shared object (`ET_EXEC` / `ET_DYN`).
+</Note>
+
+<Tip>
+  Use `casr-gdb` together with `casr-san` in `casr-afl` or `casr-libfuzzer` pipelines
+  to produce **two** reports for each crash: one with sanitizer-enriched information and
+  one with pure GDB-based severity analysis on the uninstrumented binary. This lets you
+  compare sanitizer severity with real-world exploitability.
+</Tip>

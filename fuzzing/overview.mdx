@@ -1,0 +1,143 @@
+---
+title: "Fuzzing Crash Triage with CASR"
+sidebarTitle: "Overview"
+description: "Automate crash deduplication, clustering, and severity analysis for AFL++, libFuzzer, and other fuzzers using CASR's triage pipeline."
+---
+
+CASR's fuzzing crash triage pipeline transforms a raw pile of fuzzer-generated crashes into an organized, deduplicated, and severity-ranked set of reports. Instead of manually replaying hundreds of crashing inputs, you let CASR generate detailed `.casrep` files, cluster them by similarity, and surface the unique findings — ready for inspection or upload to a vulnerability tracker.
+
+## Manual Triage Pipeline
+
+When working with raw crash directories produced by any fuzzer, you can follow these five steps to triage crashes end-to-end:
+
+<Steps>
+  <Step title="Create crash reports">
+    Run the appropriate CASR reporter on each crashing input. Choose the tool that matches your target's language and instrumentation:
+
+    - `casr-san` — sanitizer-instrumented binaries (ASAN, MSAN)
+    - `casr-gdb` — uninstrumented compiled binaries (via GDB)
+    - `casr-python` — Python targets (including Atheris)
+    - `casr-java` — Java targets (including Jazzer)
+    - `casr-js` — JavaScript targets (Jazzer.js, jsfuzz)
+    - `casr-csharp` — C# targets (Sharpfuzz)
+
+    Each invocation produces a `.casrep` JSON file containing severity, stack trace, registers, disassembly, and source context.
+  </Step>
+
+  <Step title="Deduplicate reports">
+    Remove exact-duplicate reports before clustering to keep the dataset clean:
+
+    ```bash
+    casr-cluster -d /path/to/reports /path/to/dedup-out
+    ```
+
+    Deduplication compares filtered stack traces, so two reports for the same root cause are collapsed into one.
+  </Step>
+
+  <Step title="Cluster deduplicated reports">
+    Group the remaining reports by crash similarity. Closely related crashes end up in the same cluster so that each cluster represents a distinct bug:
+
+    ```bash
+    casr-cluster -c /path/to/dedup-out /path/to/clusters-out
+    ```
+
+    The output directory contains sub-directories `cl1/`, `cl2/`, … each holding one cluster's `.casrep` files.
+  </Step>
+
+  <Step title="Handle UBSAN errors">
+    UndefinedBehaviorSanitizer findings require a separate step. `casr-ubsan` replays each input against the UBSAN-instrumented binary, generates reports, and deduplicates them by crash line:
+
+    ```bash
+    casr-ubsan -i /path/to/ubsan-inputs -o /path/to/ubsan-out -- ./target_ubsan @@
+    ```
+  </Step>
+
+  <Step title="Review or upload findings">
+    Inspect clustered reports interactively with the TUI:
+
+    ```bash
+    casr-cli /path/to/clusters-out
+    ```
+
+    Or upload new and unique findings directly to [DefectDojo](/fuzzing/casr-dojo) for centralized vulnerability management:
+
+    ```bash
+    casr-dojo -i /path/to/clusters-out -u http://localhost:8080 -t <API_KEY> dojo.toml
+    ```
+  </Step>
+</Steps>
+
+## Automated Pipelines
+
+For the two most common fuzzing ecosystems, CASR provides single-command pipeline tools that run steps 1–3 automatically:
+
+<CardGroup cols={2}>
+  <Card title="casr-afl" icon="bug" href="/fuzzing/casr-afl">
+    Triage crashes from **AFL++** and Sharpfuzz (C#) campaigns. Reads AFL's
+    multi-worker output directories, picks the right reporter per target type,
+    deduplicates, and clusters — all in one command.
+  </Card>
+  <Card title="casr-libfuzzer" icon="magnifying-glass" href="/fuzzing/casr-libfuzzer">
+    Triage crashes from **libFuzzer**, LibAFL, Atheris, Jazzer, Jazzer.js,
+    jsfuzz, luzer, and go-fuzz campaigns. Supports GDB supplementary reports
+    for uninstrumented builds.
+  </Card>
+</CardGroup>
+
+<Note>
+  `casr-ubsan` and `casr-dojo` are not included in the automated pipeline and
+  must always be run manually as separate steps after `casr-afl` or
+  `casr-libfuzzer` completes.
+</Note>
+
+## Supported Fuzzers
+
+| Fuzzer | Tool | Language |
+|--------|------|----------|
+| [AFL++](https://github.com/AFLplusplus/AFLplusplus) | `casr-afl` | C/C++ |
+| [Sharpfuzz](https://github.com/Metalnem/sharpfuzz) | `casr-afl` | C# |
+| [libFuzzer](https://www.llvm.org/docs/LibFuzzer.html) | `casr-libfuzzer` | C/C++ |
+| [go-fuzz](https://github.com/dvyukov/go-fuzz) | `casr-libfuzzer` | Go |
+| [Atheris](https://github.com/google/atheris) | `casr-libfuzzer` | Python |
+| [Jazzer](https://github.com/CodeIntelligenceTesting/jazzer) | `casr-libfuzzer` | Java |
+| [Jazzer.js](https://github.com/CodeIntelligenceTesting/jazzer.js) | `casr-libfuzzer` | JavaScript |
+| [jsfuzz](https://github.com/fuzzitdev/jsfuzz) | `casr-libfuzzer` | JavaScript |
+| [luzer](https://github.com/ligurio/luzer) | `casr-libfuzzer` | Lua |
+| [LibAFL](https://github.com/AFLplusplus/LibAFL) | `casr-libfuzzer` | C/C++ |
+
+## Continuous Fuzzing and Report Accumulation
+
+In long-running or CI-based fuzzing campaigns, new crashes accumulate over time. CASR supports **incremental triage** so that re-running the pipeline only processes genuinely new findings and merges them into the existing cluster set.
+
+Pass the path to the previously triaged cluster directory with `--join` (or set the `CASR_PREV_CLUSTERS_DIR` environment variable):
+
+```bash
+# First run
+casr-afl -i /afl-out -o /triage/run-1
+
+# Subsequent runs — merge new crashes into the existing clusters
+casr-afl -i /afl-out -o /triage/run-2 --join /triage/run-1
+```
+
+When `--join` is provided, CASR computes the difference between the new crash set and the previous cluster set, clusters only the new unique reports, and then merges them with the existing clusters. This avoids re-triaging crashes you have already reviewed.
+
+The same flag is available on `casr-libfuzzer`:
+
+```bash
+casr-libfuzzer -i /crashes -o /triage/run-2 --join /triage/run-1 -- ./fuzz_target
+```
+
+<Tip>
+  In CI pipelines, store the output directory as a persistent artifact between
+  runs and always pass it as `--join` on the next invocation. This gives you a
+  continuously updated cluster set with minimal redundant work.
+</Tip>
+
+## Rust Target Note
+
+<Note>
+  When triaging crashes from Rust fuzz targets, set
+  `RUST_BACKTRACE=1` (or `RUST_BACKTRACE=full`) before running `casr-afl` or
+  `casr-libfuzzer`. When this variable is present, `casr-san` uses the Rust
+  backtrace instead of the ASAN stack trace for analysis and deduplication.
+</Note>

@@ -1,0 +1,96 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "CASR",
+  "projectDescription": "CASR (Crash Analysis and Severity Report) is a suite of CLI tools and a Rust library for collecting, analyzing, triaging, and estimating the severity of crash reports from sanitizers, GDB, fuzzers, and multiple programming languages.",
+  "theme": "aspen",
+  "primaryColor": "#CC2936",
+  "lightColor": "#FF4D5A",
+  "darkColor": "#991F2B",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "CLI Tools",
+            "pages": [
+              "tools/casr-san",
+              "tools/casr-gdb",
+              "tools/casr-core",
+              "tools/casr-ubsan",
+              "tools/casr-cluster",
+              "tools/casr-cli"
+            ]
+          },
+          {
+            "group": "Language Support",
+            "pages": [
+              "tools/casr-python",
+              "tools/casr-java",
+              "tools/casr-js",
+              "tools/casr-csharp",
+              "tools/casr-lua"
+            ]
+          },
+          {
+            "group": "Fuzzer Integration",
+            "pages": [
+              "fuzzing/overview",
+              "fuzzing/casr-afl",
+              "fuzzing/casr-libfuzzer",
+              "fuzzing/casr-dojo"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/severity-classes",
+              "reference/report-format",
+              "reference/libcasr"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Crash severity estimation (EXPLOITABLE / PROBABLY_EXPLOITABLE / NOT_EXPLOITABLE) for x86, x86_64, ARM32, AArch64, RISC-V architectures",
+    "Report collection from AddressSanitizer, MemorySanitizer, UndefinedBehaviorSanitizer, and GDB",
+    "Multi-language crash analysis: C/C++, Rust, Python, Java, JavaScript, C#, Go, Lua",
+    "Crash deduplication and clustering based on stack trace comparison",
+    "Automated triage pipelines for AFL++, libFuzzer, LibAFL, and Sharpfuzz",
+    "SARIF report generation for IDE integration",
+    "DefectDojo integration for vulnerability management via casr-dojo",
+    "TUI report viewer via casr-cli",
+    "LibCASR Rust library for programmatic crash analysis"
+  ],
+  "publicApiSurface": [
+    "casr-san — generate reports from AddressSanitizer/MemorySanitizer output",
+    "casr-gdb — generate reports via GDB",
+    "casr-core — analyze coredumps (offline/online via core_pattern)",
+    "casr-ubsan — triage UndefinedBehaviorSanitizer errors",
+    "casr-python — generate reports from Python crashes",
+    "casr-java — generate reports from Java crashes",
+    "casr-js — generate reports from JavaScript crashes",
+    "casr-csharp — generate reports from C# crashes",
+    "casr-lua — generate reports from Lua crashes",
+    "casr-cluster — deduplicate and cluster .casrep files",
+    "casr-cli — TUI viewer; joint statistics; SARIF export",
+    "casr-afl — automated triage for AFL++/Sharpfuzz crash directories",
+    "casr-libfuzzer — automated triage for libFuzzer/LibAFL crash directories",
+    "casr-dojo — upload unique reports to DefectDojo",
+    "libcasr::report::CrashReport — core crash report struct",
+    "libcasr::execution_class::ExecutionClass — severity classification struct",
+    "libcasr::stacktrace — stacktrace parsing, filtering, deduplication, clustering",
+    "libcasr::cluster — crash clustering API",
+    "libcasr::sarif — SARIF report generation"
+  ]
+}

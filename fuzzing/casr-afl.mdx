@@ -1,0 +1,221 @@
+---
+title: "casr-afl: Triage AFL++ and Sharpfuzz Crashes"
+sidebarTitle: "casr-afl"
+description: "Automatically generate, deduplicate, and cluster CASR reports for crashes found by AFL++ and Sharpfuzz (C#) in a single pipeline command."
+---
+
+`casr-afl` is a fully automated crash triage pipeline for [AFL++](https://github.com/AFLplusplus/AFLplusplus) and the AFL-based C# fuzzer [Sharpfuzz](https://github.com/Metalnem/sharpfuzz). It walks the AFL++ multi-worker output directory, detects the appropriate CASR reporter for each target binary (ASAN-instrumented binaries use `casr-san`; all others use `casr-gdb`), generates crash reports in parallel, deduplicates them, and finally clusters the unique reports — producing a tidy directory tree where each sub-directory represents a distinct crash class.
+
+<Note>
+  `casr-gdb` and `casr-san` must both be present in `PATH` before running
+  `casr-afl`.
+</Note>
+
+## Usage
+
+```
+Usage: casr-afl [OPTIONS] --input <INPUT_DIR> --output <OUTPUT_DIR> [-- <ARGS>...]
+
+Arguments:
+  [ARGS]...  Add "-- ./gdb_fuzz_target <arguments>" to generate additional crash
+             reports with casr-gdb (for compiled binaries, e.g., test whether
+             program crashes without sanitizers), "-- dotnet <arguments>" or
+             "-- mono <arguments>" to triage C# crashes with additional options
+
+Options:
+  -l, --log-level <log-level>     Logging level [default: info] [possible values: info, debug]
+  -j, --jobs <jobs>               Number of parallel jobs for generating CASR reports
+                                  [default: half of cpu cores]
+  -t, --timeout <SECONDS>         Timeout (in seconds) for target execution, 0 value means
+                                  that timeout is disabled [default: 0]
+  -i, --input <INPUT_DIR>         AFL++ work directory
+  -o, --output <OUTPUT_DIR>       Output directory with triaged reports
+      --join <PREV_CLUSTERS_DIR>  Use directory with previously triaged reports for new
+                                  reports accumulation [env: CASR_PREV_CLUSTERS_DIR=]
+  -f, --force-remove              Remove output project directory if it exists
+      --ignore-cmdline            Force <ARGS> usage to run target instead of searching
+                                  for cmdline files in AFL fuzzing directory
+      --no-cluster                Do not cluster CASR reports
+      --hint <HINT>               Hint to force run casr-HINT tool to analyze crashes
+                                  [default: auto] [possible values: auto, gdb, san, csharp]
+  -h, --help                      Print help
+  -V, --version                   Print version
+```
+
+## Options Reference
+
+<ParamField path="-l, --log-level" type="string" default="info">
+  Logging verbosity. Use `debug` to see per-crash tool invocations and
+  deduplication decisions. Possible values: `info`, `debug`.
+</ParamField>
+
+<ParamField path="-j, --jobs" type="integer">
+  Number of parallel jobs used when generating CASR reports. Defaults to half
+  the number of available CPU cores. Must be ≥ 1.
+</ParamField>
+
+<ParamField path="-t, --timeout" type="integer" default="0">
+  Per-crash execution timeout in seconds. `0` disables the timeout entirely.
+  Setting a timeout prevents `casr-afl` from stalling on inputs that hang the
+  target.
+</ParamField>
+
+<ParamField path="-i, --input" type="path" required>
+  Path to the AFL++ work directory. This is the top-level directory that
+  contains one sub-directory per fuzzer instance (e.g. `afl_main-worker/`,
+  `afl_s01-worker/`). You can also pass a single vanilla AFL instance directory
+  directly — `casr-afl` detects both layouts automatically.
+</ParamField>
+
+<ParamField path="-o, --output" type="path" required>
+  Destination directory for triaged reports. After a successful run it contains
+  cluster sub-directories (`cl1/`, `cl2/`, …) each holding one or more
+  `.casrep` files that represent the same root cause.
+</ParamField>
+
+<ParamField path="--join" type="path">
+  Path to a directory containing cluster output from a **previous** `casr-afl`
+  run. When provided, only crashes that are new relative to the previous run
+  are triaged and merged into the existing clusters. Can also be set via the
+  `CASR_PREV_CLUSTERS_DIR` environment variable.
+</ParamField>
+
+<ParamField path="-f, --force-remove" type="boolean">
+  Delete the output directory before starting if it already exists. Without
+  this flag, `casr-afl` will exit with an error rather than overwrite an
+  existing output directory.
+</ParamField>
+
+<ParamField path="--ignore-cmdline" type="boolean">
+  When set, the target command passed after `--` is used directly to replay
+  crashes instead of reading `cmdline` files from the AFL worker directories.
+  Required when using a vanilla AFL directory layout that lacks `cmdline` files.
+</ParamField>
+
+<ParamField path="--no-cluster" type="boolean">
+  Skip the clustering step. Reports are still generated and deduplicated, but
+  they are placed directly in the output directory without cluster
+  sub-directories. Useful when you only need raw deduplicated reports quickly.
+</ParamField>
+
+<ParamField path="--hint" type="string" default="auto">
+  Override automatic reporter detection. Possible values:
+
+  - `auto` — detect the correct tool from the binary's symbols and the command
+    line (default)
+  - `gdb` — always use `casr-gdb`
+  - `san` — always use `casr-san`
+  - `csharp` — always use `casr-csharp`
+</ParamField>
+
+## CASR_PREV_CLUSTERS_DIR
+
+Setting the `CASR_PREV_CLUSTERS_DIR` environment variable is equivalent to
+passing `--join <path>`. It is convenient in CI environments where you want to
+point at the previous run's output without modifying the command line:
+
+```bash
+export CASR_PREV_CLUSTERS_DIR=/triage/previous-run
+casr-afl -i /afl-out -o /triage/current-run
+```
+
+## AFL++ Example (Ubuntu 20.04+)
+
+Copy the test binaries and run `casr-afl` against the AFL++ output directory:
+
+```bash
+cp casr/tests/casr_tests/bin/load_afl /tmp/load_afl
+cp casr/tests/casr_tests/bin/load_sydr /tmp/load_sydr
+casr-afl -i casr/tests/casr_tests/casrep/afl-out-xlnt \
+         -o casr/tests/tmp_tests_casr/casr_afl_out
+```
+
+The output directory is organized into clusters:
+
+```
+casr_afl_out
+├── cl1
+│   └── id:000029,sig:00,src:000260,time:5748120,execs:122586,op:havoc,rep:8.casrep
+├── cl2
+│   └── id:000025,sig:00,sync:sydr-worker,src:000157.casrep
+├── cl3
+│   ├── id:000009,sig:00,sync:afl_s01-worker,src:000560.casrep
+│   ├── id:000012,sig:00,sync:afl_s01-worker,src:000730.casrep
+│   └── id:000017,sig:00,src:000037,time:232885,execs:12235,op:havoc,rep:16.casrep
+├── cl12
+│   ├── id:000016,sig:06,src:000018+000639,...,op:splice,rep:2.casrep
+│   └── id:000018,sig:06,src:000064+000617,...,op:splice,rep:16.gdb.casrep
+└── ...
+```
+
+Reports from ASAN-instrumented binaries are saved as `.casrep`; reports
+generated by `casr-gdb` for uninstrumented builds are saved as `.gdb.casrep`.
+
+## Adding GDB Reports for Uninstrumented Binaries
+
+To additionally generate GDB crash reports for a non-instrumented build of the
+same target (useful for severity estimation without sanitizers), pass the
+uninstrumented binary after `--`:
+
+```bash
+casr-afl -i casr/tests/casr_tests/casrep/afl-out-xlnt \
+         -o casr/tests/tmp_tests_casr/casr_afl_out \
+         -- /tmp/load_sydr @@
+```
+
+`casr-afl` will produce a `.gdb.casrep` file alongside the primary `.casrep`
+report for each unique ASAN crash. The `@@` placeholder is replaced with the
+path to each crash seed at runtime.
+
+## Sharpfuzz Example
+
+Triaging C# crashes requires building the target first. `casr-afl` reads the
+`cmdline` file inside the AFL directory to determine how to invoke the target:
+
+```bash
+cp -r casr/tests/casr_tests/csharp/test_casr_afl_csharp \
+      /tmp/test_casr_afl_csharp
+cp -r casr/tests/casr_tests/csharp/test_casr_afl_csharp_module \
+      /tmp/test_casr_afl_csharp_module
+dotnet publish /tmp/test_casr_afl_csharp/test_casr_afl_csharp.csproj \
+               -c Debug -o /tmp/test_casr_afl_csharp/bin
+casr-afl -i casr/tests/casr_tests/casrep/afl-out-sharpfuzz \
+         -o casr/tests/tmp_tests_casr/casr_afl_csharp_out
+```
+
+To override the command line from the AFL `cmdline` file (for example when the
+project needs `--no-build` to avoid rebuilding on every replay), use
+`--ignore-cmdline`:
+
+```bash
+casr-afl --ignore-cmdline \
+         -i casr/tests/casr_tests/casrep/afl-out-sharpfuzz \
+         -o casr/tests/tmp_tests_casr/casr_afl_csharp_out \
+         -- dotnet run --no-build \
+              --project /tmp/test_casr_afl_csharp/test_casr_afl_csharp.csproj @@
+```
+
+When passing a vanilla AFL single-worker directory (no `cmdline` files), you
+must always supply the run arguments explicitly:
+
+```bash
+casr-afl -i casr/tests/casr_tests/casrep/afl-out-sharpfuzz/afl_main-worker \
+         -o casr/tests/tmp_tests_casr/casr_afl_csharp_out \
+         -- dotnet run --no-build \
+              --project /tmp/test_casr_afl_csharp/test_casr_afl_csharp.csproj @@
+```
+
+<Warning>
+  If you use `--ignore-cmdline` with `dotnet run`, build your project first
+  with `dotnet build` or `dotnet publish` and pass `--no-build` to `dotnet run`
+  to avoid recompilation on every crash replay.
+</Warning>
+
+## Rust Target Note
+
+<Note>
+  Set `RUST_BACKTRACE=1` (or `RUST_BACKTRACE=full`) when triaging crashes from
+  Rust fuzz targets. When this environment variable is present, `casr-san` uses
+  the Rust backtrace instead of the ASAN stack trace for analysis and
+  deduplication.
+</Note>

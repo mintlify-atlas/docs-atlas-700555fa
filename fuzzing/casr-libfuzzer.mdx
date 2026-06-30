@@ -1,0 +1,239 @@
+---
+title: "casr-libfuzzer: Triage libFuzzer and LibAFL Crashes"
+sidebarTitle: "casr-libfuzzer"
+description: "Automatically generate, deduplicate, and cluster CASR reports for libFuzzer, LibAFL, Atheris, Jazzer, Jazzer.js, jsfuzz, luzer, and go-fuzz crashes."
+---
+
+`casr-libfuzzer` provides a single-command crash triage pipeline for
+[libFuzzer](https://www.llvm.org/docs/LibFuzzer.html)-based fuzzers (C/C++,
+[go-fuzz](https://github.com/dvyukov/go-fuzz),
+[Atheris](https://github.com/google/atheris),
+[Jazzer](https://github.com/CodeIntelligenceTesting/jazzer),
+[Jazzer.js](https://github.com/CodeIntelligenceTesting/jazzer.js),
+[jsfuzz](https://github.com/fuzzitdev/jsfuzz),
+[luzer](https://github.com/ligurio/luzer)) and
+[LibAFL](https://github.com/AFLplusplus/LibAFL)-based fuzzers. It reads a
+directory of crash seeds, automatically selects the right CASR reporter for the
+target language, generates crash reports in parallel, deduplicates them, and
+clusters the unique findings. The workflow is the same as `casr-afl` but
+targeted at libFuzzer's flat crash-file layout.
+
+## Usage
+
+```
+Usage: casr-libfuzzer [OPTIONS] --output <OUTPUT_DIR> -- <ARGS>...
+
+Arguments:
+  <ARGS>...  Add "-- ./fuzz_target <arguments>"
+
+Options:
+  -l, --log-level <log-level>
+          Logging level [default: info] [possible values: info, debug]
+  -j, --jobs <jobs>
+          Number of parallel jobs for generating CASR reports [default: half of cpu cores]
+  -t, --timeout <SECONDS>
+          Timeout (in seconds) for target execution, 0 means that timeout is disabled
+          [default: 0]
+  -i, --input <INPUT_DIR>
+          Directory containing crashes found by libFuzzer or LibAFL [default: .]
+  -o, --output <OUTPUT_DIR>
+          Output directory with triaged reports
+      --join <PREV_CLUSTERS_DIR>
+          Use directory with previously triaged reports for new reports accumulation
+          [env: CASR_PREV_CLUSTERS_DIR=]
+  -f, --force-remove
+          Remove output project directory if it exists
+      --no-cluster
+          Do not cluster CASR reports
+      --casr-gdb-args <casr-gdb-args>
+          Add "--casr-gdb-args './gdb_fuzz_target <arguments>'" to generate additional
+          crash reports with casr-gdb (e.g., test whether program crashes without sanitizers)
+      --hint <HINT>
+          Hint to force run casr-HINT tool to analyze crashes [default: auto]
+          [possible values: auto, gdb, java, js, python, san]
+  -h, --help
+          Print help
+  -V, --version
+          Print version
+```
+
+## Options Reference
+
+<ParamField path="-l, --log-level" type="string" default="info">
+  Logging verbosity. Use `debug` for detailed per-crash output. Possible
+  values: `info`, `debug`.
+</ParamField>
+
+<ParamField path="-j, --jobs" type="integer">
+  Number of parallel jobs used when generating CASR reports. Defaults to half
+  the number of available CPU cores. Must be ≥ 1.
+</ParamField>
+
+<ParamField path="-t, --timeout" type="integer" default="0">
+  Per-crash execution timeout in seconds. `0` disables the timeout. Useful for
+  targets that may hang on certain inputs.
+</ParamField>
+
+<ParamField path="-i, --input" type="path" default=".">
+  Directory containing crash files produced by libFuzzer or LibAFL. libFuzzer
+  names its crash files `crash-<hash>` and leak files `leak-<hash>`. LibAFL
+  directories are detected automatically by the presence of a `.metadata` file.
+  Defaults to the current working directory.
+</ParamField>
+
+<ParamField path="-o, --output" type="path" required>
+  Destination directory for triaged reports. After a successful run it contains
+  cluster sub-directories (`cl1/`, `cl2/`, …).
+</ParamField>
+
+<ParamField path="--join" type="path">
+  Path to a cluster directory produced by a previous `casr-libfuzzer` run.
+  Only crashes that are new relative to that previous run are triaged and merged
+  into the existing clusters. Can also be set via the `CASR_PREV_CLUSTERS_DIR`
+  environment variable.
+</ParamField>
+
+<ParamField path="-f, --force-remove" type="boolean">
+  Delete the output directory before starting if it already exists.
+</ParamField>
+
+<ParamField path="--no-cluster" type="boolean">
+  Skip the clustering step. Produces only deduplicated reports in the output
+  directory without cluster sub-directories.
+</ParamField>
+
+<ParamField path="--casr-gdb-args" type="string">
+  Command line for a non-instrumented build of the same fuzz target. When
+  provided, `casr-gdb` is invoked on every unique crash in addition to the
+  primary reporter, producing supplementary `.gdb.casrep` files for severity
+  estimation without sanitizers. The value should be a quoted string with the
+  target path and arguments, e.g. `'./load_sydr @@'`.
+
+  Only compatible with `casr-san` and `casr-gdb` targets (not usable for
+  Python, Java, JS, or Lua targets).
+</ParamField>
+
+<ParamField path="--hint" type="string" default="auto">
+  Override automatic reporter detection. Possible values:
+
+  - `auto` — detect from the binary's symbols and the command line (default)
+  - `gdb` — always use `casr-gdb`
+  - `san` — always use `casr-san`
+  - `java` — always use `casr-java`
+  - `js` — always use `casr-js`
+  - `python` — always use `casr-python`
+</ParamField>
+
+## libFuzzer (C/C++) Example
+
+```bash
+casr-libfuzzer -t 30 \
+    -i casr/tests/casr_tests/casrep/libfuzzer_crashes_xlnt \
+    -o casr/tests/tmp_tests_casr/casr_libfuzzer_out \
+    -- casr/tests/casr_tests/bin/load_fuzzer
+```
+
+The `-t 30` sets a 30-second per-crash timeout, which is recommended for
+libFuzzer targets that could hang.
+
+## Atheris (Python) Example
+
+Atheris crash files are plain files in a directory. Unzip any required
+dependencies first, then point `casr-libfuzzer` at the crash directory and the
+Python fuzzer script:
+
+```bash
+unzip casr/tests/casr_tests/python/ruamel.zip
+casr-libfuzzer \
+    -i casr/tests/casr_tests/casrep/atheris_crashes_ruamel_yaml \
+    -o casr/tests/tmp_tests_casr/casr_libfuzzer_atheris_out \
+    -- casr/tests/casr_tests/python/yaml_fuzzer.py
+```
+
+`casr-libfuzzer` detects the `.py` extension and automatically uses
+`casr-python` as the reporter.
+
+## Jazzer.js (JavaScript) Example
+
+Install `xml2js` and the Jazzer.js core package, then triage:
+
+```bash
+unzip casr/tests/casr_tests/js/xml2js.zip -d xml2js
+mkdir -p casr/tests/tmp_tests_casr/xml2js_fuzzer_out
+cp casr/tests/casr_tests/js/test_casr_libfuzzer_jazzer_js_xml2js.js \
+   casr/tests/tmp_tests_casr/xml2js_fuzzer_out/xml2js_fuzzer.js
+
+sudo npm install xml2js
+sudo npm install --save-dev @jazzer.js/core
+
+casr-libfuzzer \
+    -i ./xml2js \
+    -o casr/tests/tmp_tests_casr/xml2js_fuzzer_out/out \
+    -- npx jazzer casr/tests/tmp_tests_casr/xml2js_fuzzer_out/xml2js_fuzzer.js
+```
+
+The `npx jazzer` invocation pattern is recognized automatically and
+`casr-js` is used as the reporter.
+
+## Luzer (Lua) Example
+
+Build the Lua target library and the luzer harness, then triage:
+
+```bash
+unzip casr/tests/casr_tests/lua/xml2lua.zip \
+    && cd xml2lua && luarocks --local build && cd .. && rm -rf xml2lua
+git clone https://github.com/ligurio/luzer.git \
+    && cd luzer && luarocks --local build && cd .. && rm -rf luzer
+eval $(luarocks path)
+
+casr-libfuzzer \
+    -i casr/tests/casr_tests/casrep/luzer_crashes_xml2lua \
+    -o casr/tests/tmp_tests_casr/casr_libfuzzer_luzer_out \
+    -- casr/tests/casr_tests/lua/stdin_parse_xml.lua
+```
+
+The `.lua` extension triggers automatic selection of `casr-lua`.
+
+## LibAFL Example
+
+LibAFL crash directories contain a `.metadata` file which `casr-libfuzzer`
+uses to auto-detect the LibAFL layout. Pass `@@` in the arguments if your
+target reads the crash file from the command line:
+
+```bash
+casr-libfuzzer \
+    -i casr/tests/casr_tests/casrep/test_libafl_crashes \
+    -o casr/tests/tmp_tests_casr/casr_libafl_out \
+    -- casr/tests/casr_tests/bin/test_libafl_fuzzer @@
+```
+
+## Adding GDB Reports for Uninstrumented Binaries
+
+To generate supplementary GDB-based reports alongside the primary ASAN reports
+(for severity estimation without sanitizers), pass `--casr-gdb-args` with the
+uninstrumented target path:
+
+```bash
+casr-libfuzzer -t 30 \
+    -i casr/tests/casr_tests/casrep/libfuzzer_crashes_xlnt \
+    -o casr/tests/tmp_tests_casr/casr_libfuzzer_out \
+    --casr-gdb-args 'casr/tests/casr_tests/bin/load_sydr @@' \
+    -- casr/tests/casr_tests/bin/load_fuzzer
+```
+
+Each unique ASAN crash will produce both a `.casrep` (from `casr-san`) and a
+`.gdb.casrep` (from `casr-gdb` via the uninstrumented binary).
+
+<Warning>
+  `--casr-gdb-args` is only compatible with C/C++ targets that use `casr-san`
+  or `casr-gdb`. Using it with Python, Java, JavaScript, or Lua targets will
+  cause `casr-libfuzzer` to exit with an error.
+</Warning>
+
+## Rust Target Note
+
+<Note>
+  Set `RUST_BACKTRACE=1` (or `RUST_BACKTRACE=full`) when triaging crashes from
+  Rust fuzz targets. When this variable is present, `casr-san` uses the Rust
+  backtrace instead of the ASAN stack trace for analysis and deduplication.
+</Note>

@@ -1,0 +1,190 @@
+---
+title: "Installing CASR on Linux: crates.io, Binary, and Source"
+sidebarTitle: "Installation"
+description: "Install CASR from crates.io, a prebuilt binary, or build from source. Covers runtime and build dependencies, Docker usage, and version verification."
+---
+
+CASR ships as a set of compiled binaries with no runtime interpreter required. You can get up and running in minutes by downloading a prebuilt release archive, installing from [crates.io](https://crates.io/crates/casr), or compiling from source for maximum control. Choose the method that best fits your environment.
+
+<Note>
+  macOS support is currently experimental. GDB-dependent features (`casr-gdb`, severity estimation via the `exploitable` engine) may not work correctly on macOS. Linux is the fully supported platform.
+</Note>
+
+## Prerequisites
+
+### Runtime Dependencies
+
+CASR requires GDB at runtime for stack-trace collection and `lsb-release` to record OS metadata inside reports.
+
+```bash
+sudo apt install gdb lsb-release
+```
+
+### Build Dependencies
+
+Required only when building from source or installing via `cargo install`.
+
+```bash
+sudo apt install build-essential clang
+```
+
+### Rust Toolchain
+
+CASR is written in Rust. Install Rust via `rustup` or update an existing installation:
+
+```bash
+# Install
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Or update an existing installation
+rustup update
+```
+
+---
+
+## Installation Methods
+
+<Tabs>
+  <Tab title="crates.io">
+    ### Install from crates.io
+
+    The simplest way to install the latest stable release. The `casr` crate on crates.io includes all CLI tools except `casr-dojo`.
+
+    ```bash
+    cargo install casr
+    ```
+
+    To include `casr-dojo` (for uploading reports to DefectDojo), enable the `dojo` feature flag:
+
+    ```bash
+    cargo install -F dojo casr
+    ```
+
+    <Info>
+      Cargo places binaries in `~/.cargo/bin/`. Make sure this directory is on your `$PATH` before running any `casr-*` command.
+    </Info>
+  </Tab>
+
+  <Tab title="Prebuilt Binary">
+    ### Install from Prebuilt Binary
+
+    Prebuilt archives are published for each release. The latest amd64 Linux release is always available at:
+
+    ```text
+    https://github.com/ispras/casr/releases/latest/download/casr-x86_64-unknown-linux-gnu.tar.xz
+    ```
+
+    Download, extract, and move the binaries to a directory on your `$PATH`:
+
+    <Steps>
+      <Step title="Download the archive">
+        ```bash
+        curl -LO https://github.com/ispras/casr/releases/latest/download/casr-x86_64-unknown-linux-gnu.tar.xz
+        ```
+      </Step>
+      <Step title="Extract the archive">
+        ```bash
+        tar -xf casr-x86_64-unknown-linux-gnu.tar.xz
+        ```
+      </Step>
+      <Step title="Move binaries to your PATH">
+        ```bash
+        sudo mv casr-x86_64-unknown-linux-gnu/casr-* /usr/local/bin/
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+
+  <Tab title="Build from Source">
+    ### Build from Source
+
+    Building from the Git repository gives you the latest development version and lets you enable optional features like `dojo`.
+
+    <Steps>
+      <Step title="Clone the repository">
+        ```bash
+        git clone https://github.com/ispras/casr
+        cd casr
+        ```
+      </Step>
+      <Step title="Update dependencies">
+        ```bash
+        cargo update
+        ```
+      </Step>
+      <Step title="Build in release mode">
+        ```bash
+        cargo build --release
+        ```
+
+        To include `casr-dojo`:
+
+        ```bash
+        cargo build --release -F dojo
+        ```
+      </Step>
+      <Step title="Add binaries to your PATH">
+        The compiled binaries land in `./target/release/`. Either add that directory to `$PATH` or copy the `casr-*` binaries to `/usr/local/bin/`:
+
+        ```bash
+        sudo cp target/release/casr-* /usr/local/bin/
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+---
+
+## Docker Usage
+
+CASR is commonly run inside Docker containers as part of automated fuzzing pipelines. Because CASR disables address randomization (ASLR) and uses `ptrace` to run GDB, Docker containers need elevated capabilities.
+
+<Warning>
+  Always start your CASR container with `--cap-add=SYS_PTRACE --security-opt seccomp=unconfined`. Without these flags, `casr-gdb` will fail and severity estimation via the exploitable engine will be unreliable.
+</Warning>
+
+```bash
+docker run --rm \
+  --cap-add=SYS_PTRACE \
+  --security-opt seccomp=unconfined \
+  -v "$(pwd)/crashes:/crashes" \
+  -v "$(pwd)/reports:/reports" \
+  my-casr-image \
+  casr-san -o /reports/report.casrep -- /crashes/test_binary
+```
+
+---
+
+## Verify Installation
+
+After installation, confirm that the core binaries are available and show the expected version:
+
+<CodeGroup>
+```bash casr-san
+casr-san --version
+```
+
+```bash casr-cluster
+casr-cluster --version
+```
+
+```bash casr-cli
+casr-cli --version
+```
+</CodeGroup>
+
+All three commands should print `casr-<tool> 2.13.1` (or the version you installed). If a command is not found, ensure `~/.cargo/bin` or `/usr/local/bin` is on your `$PATH`.
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Generate your first crash report and run the full triage pipeline in minutes.
+  </Card>
+  <Card title="Introduction" icon="book-open" href="/introduction">
+    Learn about CASR's architecture, supported languages, and available tools.
+  </Card>
+</CardGroup>

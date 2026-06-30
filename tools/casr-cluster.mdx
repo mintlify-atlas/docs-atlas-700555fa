@@ -1,0 +1,292 @@
+---
+title: "casr-cluster: Deduplication and Clustering of CASR Reports"
+sidebarTitle: "casr-cluster"
+description: "Deduplicate, cluster, merge, update, and compare CASR report sets. Enables scalable crash triage workflows for continuous fuzzing pipelines."
+---
+
+`casr-cluster` provides a suite of operations for managing large collections of `.casrep`
+files. It deduplicates reports by filtered stack trace hashing, groups similar crashes
+into numbered cluster directories, merges new findings into existing sets, updates live
+cluster structures with incremental results, and computes set differences for CI
+pipelines. All operations are parallelised across available CPU cores.
+
+## Synopsis
+
+```
+Usage: casr-cluster [OPTIONS]
+
+Options:
+  -s, --similarity <CASREP1> <CASREP2>
+          Similarity between two CASR reports
+  -c, --cluster <INPUT_DIR> <OUTPUT_DIR>
+          Cluster CASR reports. If two directories are set, clusters will be placed
+          in the second directory. If one directory is provided, clusters will be
+          placed there, but reports in this directory will not be deleted.
+      --unique-crashline
+          Leave reports with unique crash lines in each cluster
+          [env: CASR_CLUSTER_UNIQUE_CRASHLINE=]
+  -d, --deduplicate <INPUT_DIR> <OUTPUT_DIR>
+          Deduplicate CASR reports. If two directories are set, deduplicated reports
+          are copied to the second directory. If one directory is provided,
+          duplicated reports are deleted.
+  -m, --merge <INPUT_DIR> <OUTPUT_DIR>
+          Merge INPUT_DIR into OUTPUT_DIR. Only new CASR reports from INPUT_DIR
+          will be added to OUTPUT_DIR.
+  -u, --update <NEW_DIR> <OLD_DIR>
+          Update clusters in OLD_DIR using CASR reports from NEW_DIR
+  -e, --estimate <DIR>
+          Calculate silhouette score for clustering results
+      --diff <NEW_DIR> <PREV_DIR> <DIFF_DIR>
+          Compute report sets difference NEW_DIR \ PREV_DIR. Copy new CASR reports
+          from NEW_DIR into DIFF_DIR.
+      --ignore <FILE>
+          File with regular expressions for functions and file paths that should be
+          ignored
+  -j, --jobs <N>
+          Number of parallel jobs to collect CASR reports
+  -h, --help
+          Print help
+  -V, --version
+          Print version
+```
+
+## Options
+
+<ParamField path="-s, --similarity" type="path path">
+  Compute and print the similarity score (0.0–1.0) between two `.casrep` files based on
+  their filtered stack traces.
+</ParamField>
+
+<ParamField path="-c, --cluster" type="path [path]">
+  Cluster all `.casrep` files in `INPUT_DIR`. If `OUTPUT_DIR` is also provided, cluster
+  subdirectories (`cl1`, `cl2`, …) are created inside `OUTPUT_DIR` and the original files
+  in `INPUT_DIR` are left untouched. If only one directory is given, clusters are created
+  in-place and existing reports in the directory are preserved.
+</ParamField>
+
+<ParamField path="--unique-crashline" type="flag">
+  After clustering, keep only one report per unique crash line within each cluster
+  directory. Can also be controlled with the `CASR_CLUSTER_UNIQUE_CRASHLINE` environment
+  variable (see below).
+</ParamField>
+
+<ParamField path="-d, --deduplicate" type="path [path]">
+  Remove duplicate reports. If two directories are provided, unique reports are **copied**
+  to `OUTPUT_DIR`. If only one directory is provided, duplicate reports are **deleted**
+  in place.
+</ParamField>
+
+<ParamField path="-m, --merge" type="path path">
+  Merge unique reports from `INPUT_DIR` into `OUTPUT_DIR`. Only reports whose stack
+  traces are not already represented in `OUTPUT_DIR` are copied. Useful for accumulating
+  new fuzzer findings into an existing triage set.
+</ParamField>
+
+<ParamField path="-u, --update" type="path path">
+  Add reports from `NEW_DIR` to an existing cluster structure in `OLD_DIR`. Reports that
+  fit into existing clusters are added there; reports that do not fit form new clusters.
+  Prints a silhouette score after updating.
+</ParamField>
+
+<ParamField path="-e, --estimate" type="path">
+  Calculate and print the average silhouette coefficient for an existing cluster
+  directory. A score near 1.0 indicates well-separated clusters.
+</ParamField>
+
+<ParamField path="--diff" type="path path path">
+  Compute the set difference `NEW_DIR \ PREV_DIR` and copy unique reports to `DIFF_DIR`.
+  Useful in CI pipelines to find crashes discovered since the last run.
+</ParamField>
+
+<ParamField path="--ignore" type="path">
+  Path to a file containing regular expressions for function names and file paths that
+  should be ignored during stack trace comparison (see **Ignore File Format** below).
+</ParamField>
+
+<ParamField path="-j, --jobs" type="integer">
+  Number of parallel worker threads. Defaults to half of available CPU cores.
+</ParamField>
+
+## Deduplication
+
+Deduplication compares filtered stack traces and removes reports whose traces are
+identical to one already seen. Run deduplication **before** clustering to improve cluster
+quality.
+
+### Two-directory deduplication (copy unique reports)
+
+```bash
+casr-cluster -d casr/tests/casr_tests/casrep/test_clustering_gdb out-dedup
+```
+
+Unique reports are copied to `out-dedup/`; originals in the source directory are not
+modified.
+
+### In-place deduplication (delete duplicates)
+
+Provide only one directory to remove duplicates directly:
+
+```bash
+casr-cluster -d my_reports/
+```
+
+## Clustering
+
+Clustering groups reports with similar stack traces into numbered subdirectories
+(`cl1`, `cl2`, …). Reports that cannot be parsed are placed in a `clerr/` subdirectory.
+
+### Basic clustering workflow
+
+```bash
+# Step 1 – deduplicate
+casr-cluster -d casr/tests/casr_tests/casrep/test_clustering_gdb out-dedup
+
+# Step 2 – cluster the deduplicated reports
+casr-cluster -c out-dedup out-cluster
+```
+
+### Resulting directory structure
+
+After clustering, `out-cluster` will look like this:
+
+```
+out-cluster
+├── cl1
+│   ├── crash-2509d035b2e80f9a581d3aa8d06cfc69e0c039b5.casrep
+│   ├── crash-a791b3987d2f0df9e23ea6391f4fdf7668efec43.casrep
+│   └── crash-c30769502be4b694429b2f6fefd711077f8d74a9.casrep
+├── cl2
+│   └── crash-a9ae83bf106b3b0922e49c5e39d5bf243dba9cf1.casrep
+├── cl3
+│   └── crash-c886939eb1d08b7441f5c7db5214880e9edb6293.casrep
+├── cl4
+│   └── crash-f76c353b794463ac1bdcc29e8f5d745984c6ecee.casrep
+...
+└── cl13
+    └── crash-a04315b661e020c8a4e0cc566c75a765268270cb.casrep
+```
+
+Each `clN` directory contains reports from the same crash cluster. The number of reports
+per cluster reflects how often that crash type was triggered.
+
+### Cluster with unique crash line filtering
+
+Keep only the report with the most representative crash line in each cluster:
+
+```bash
+casr-cluster --unique-crashline -c out-dedup out-cluster
+```
+
+## Similarity Comparison
+
+Print the normalised similarity score between two individual reports:
+
+```bash
+casr-cluster -s report1.casrep report2.casrep
+# Example output: 0.87654
+```
+
+A score of `1.0` means the filtered stack traces are identical; `0.0` means they share
+no common frames.
+
+## Merge
+
+Merge new reports into an existing set, adding only those not already represented:
+
+```bash
+casr-cluster -m new_findings/ existing_reports/
+# Output: Merged 5 new reports into existing_reports/ directory
+```
+
+## Update (Continuous Fuzzing)
+
+`--update` is designed for long-running fuzzing campaigns. It integrates new reports into
+an existing cluster tree, extending existing clusters where possible and creating new
+ones for genuinely different crashes.
+
+### Example — simulating an incremental update
+
+```bash
+# Initial clustering
+casr-cluster -c casr/tests/casr_tests/casrep/test_clustering_small out
+
+# Simulate partial deletion (some reports removed between runs)
+rm -f out/cl9/40.casrep out/cl7/20.casrep
+rm -rf out/cl8
+mv out/cl9 out/cl8
+
+# Re-integrate the full set of new reports
+casr-cluster -u casr/tests/casr_tests/casrep/test_clustering_small out
+```
+
+After `--update`, `casr-cluster` prints:
+
+- Number of reports added to existing clusters
+- Number of duplicates skipped
+- Number of new clusters created
+- Cluster silhouette score
+
+## Diff (CI Pipelines)
+
+Compute the set of reports that are new in `NEW_DIR` compared with `PREV_DIR` and save
+them to `DIFF_DIR`. Useful for tracking which crashes were found since the last triage:
+
+```bash
+casr-cluster --diff new_run/ previous_run/ diff_results/
+# Output: Diff of 3 new reports is saved into diff_results/ directory
+```
+
+## Silhouette Score
+
+Estimate the quality of an existing clustering with the average silhouette coefficient:
+
+```bash
+casr-cluster -e out-cluster
+# Output: Cluster silhouette score: 0.73421
+```
+
+## Ignore File Format
+
+The `--ignore` flag accepts a plain-text file with two optional sections. Frames whose
+function names or file paths match any of the listed regular expressions are excluded from
+stack trace comparison.
+
+```
+FUNCTIONS
+/*ignored regexs for function names*/
+
+FILES
+/*ignored regexs for file paths*/
+```
+
+- Both sections are optional and may appear in either order.
+- Each line inside a section is treated as a separate Go-compatible regular expression.
+- Frames matching any pattern are dropped before similarity and deduplication analysis.
+
+**Example ignore file:**
+
+```
+FUNCTIONS
+^__sanitizer
+^__asan_
+^malloc$
+^free$
+
+FILES
+/usr/lib/
+/usr/include/
+```
+
+## CASR_CLUSTER_UNIQUE_CRASHLINE Environment Variable
+
+The `--unique-crashline` flag can also be controlled via the environment variable
+`CASR_CLUSTER_UNIQUE_CRASHLINE`. The following values are treated as **false**:
+
+`n`, `no`, `f`, `false`, `off`, `0`, or an absent variable.
+
+Any other value (e.g., `1`, `true`, `yes`) is treated as **true**.
+
+```bash
+export CASR_CLUSTER_UNIQUE_CRASHLINE=1
+casr-cluster -c out-dedup out-cluster
+```

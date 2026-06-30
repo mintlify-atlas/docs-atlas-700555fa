@@ -1,0 +1,229 @@
+---
+title: "casr-dojo: Upload Findings to DefectDojo"
+sidebarTitle: "casr-dojo"
+description: "Upload new and unique CASR crash reports to DefectDojo for centralized vulnerability management, with automatic deduplication against existing findings."
+---
+
+`casr-dojo` uploads CASR crash reports to [DefectDojo](https://github.com/DefectDojo/django-DefectDojo), an open-source vulnerability management platform. It recursively scans an input directory for `.casrep` files, deduplicates them against findings already present in DefectDojo, and uploads only genuinely new crashes — along with their GDB supplementary reports and crash seed files — as structured findings with full CASR metadata in the description.
+
+This gives you a single entry point for all crashes analyzed with CASR across multiple targets and fuzzing campaigns.
+
+<Warning>
+  `casr-dojo` requires the `dojo` feature flag at compile time. Install with:
+
+  ```bash
+  cargo install -F dojo casr
+  ```
+
+  Or when building from source:
+
+  ```bash
+  cargo build -F dojo --release
+  ```
+</Warning>
+
+## How It Works
+
+<Steps>
+  <Step title="Fill default parameters">
+    `casr-dojo` reads a TOML configuration file and fills in required DefectDojo
+    API fields that were not explicitly specified (such as `target_start`,
+    `target_end`, `prod_type`, `engagement_type`, and `test_type`). You can
+    override any of these defaults in the TOML. The `test.test_type` field
+    accepts either an integer ID or a human-readable string name — if a string is
+    given, `casr-dojo` will look up or create the corresponding `test_type`
+    entity automatically.
+  </Step>
+
+  <Step title="Get or create product, engagement, and test">
+    Using the names specified in the TOML, `casr-dojo` looks up the corresponding
+    DefectDojo entities. If a product, engagement, or test with the given name
+    does not yet exist, it is created automatically. This maps naturally to CASR
+    workflows: the **product** is the project being fuzzed, the **engagement** is
+    the specific fuzz target or CI job, and the **test** is the fuzzer that found
+    the crashes.
+  </Step>
+
+  <Step title="Download existing findings">
+    `casr-dojo` fetches all active, false-positive, and out-of-scope findings for
+    the product. This ensures that crashes you have already reviewed (and possibly
+    marked as false positives or out of scope) are never re-uploaded.
+  </Step>
+
+  <Step title="Compute report hashes">
+    For each downloaded finding that has an attached CASR report file,
+    `casr-dojo` downloads the report and computes its deduplication key:
+
+    - **Non-UBSAN reports** — a hash of the filtered stack trace (same algorithm
+      as `casr-cluster -d`)
+    - **UBSAN reports** — the crash source file and line number
+  </Step>
+
+  <Step title="Upload new unique reports">
+    Each local `.casrep` file whose hash is not already present in DefectDojo is
+    uploaded as a new finding. The finding description includes the crash line,
+    severity classification, command line, OS/architecture info, source fragment,
+    sanitizer output, and full stack trace. In addition to the `.casrep` file
+    itself, `casr-dojo` uploads:
+
+    - The `.gdb.casrep` file, if it exists alongside the primary report
+    - The crash seed file (the original fuzzer input that triggered the crash)
+  </Step>
+</Steps>
+
+## TOML Configuration
+
+`casr-dojo` requires a TOML file that specifies the DefectDojo entities to use.
+At minimum, `[product]` with a `name` field and `[engagement]` with a `name`
+field are required. The `[test]` section is optional and defaults to a test
+named `"CASR Crash Reports"`.
+
+```toml
+[product]
+name = "xlnt"
+
+[engagement]
+name = "load_fuzzer 2023-06-07T16:47:18+03:00"
+
+[test]
+test_type = "CASR DAST Report"
+```
+
+### `[product]`
+
+Maps to a DefectDojo **product** (the project or library being fuzzed).
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `name` | string | **Required.** Product name. Used to look up or create the product. |
+| `description` | string | Product description. Defaults to the value of `name`. |
+| `prod_type` | integer | Product type ID. Defaults to `1` (R&D). |
+
+### `[engagement]`
+
+Maps to a DefectDojo **engagement** (a specific fuzzing target or CI job run).
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `name` | string | **Required.** Engagement name. Including a timestamp (e.g. from `date -Isec`) makes each CI run a distinct engagement. |
+| `engagement_type` | string | Defaults to `"CI/CD"`. |
+| `target_start` | string | Start date (`YYYY-MM-DD`). Defaults to today. |
+| `target_end` | string | End date (`YYYY-MM-DD`). Defaults to today. |
+
+### `[test]`
+
+Maps to a DefectDojo **test** (a specific fuzzer or test tool).
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `test_type` | string or integer | Test type name or ID. If a string is given, `casr-dojo` looks up or creates the matching `test_type`. Defaults to `"CASR Crash Reports"`. |
+| `target_start` | string | Inherited from `[engagement]` if not set. |
+| `target_end` | string | Inherited from `[engagement]` if not set. |
+| `environment` | integer | Test environment ID. Defaults to `3` (Production). |
+
+## Usage
+
+```
+Usage: casr-dojo [OPTIONS] --url <URL> --token <TOKEN> --input <INPUT_DIR> <PARAMS>
+
+Arguments:
+  <PARAMS>  TOML file with parameters for DefectDojo product, engagement, and test
+
+Options:
+  -l, --log-level <log-level>  Logging level [default: info] [possible values: info, debug]
+  -u, --url <URL>              DefectDojo base URL
+  -t, --token <TOKEN>          DefectDojo API key
+  -i, --input <INPUT_DIR>      Directory that is recursively searched for CASR reports
+                               (also, crash seeds and CASR GDB reports if they are present)
+  -h, --help                   Print help
+  -V, --version                Print version
+```
+
+<ParamField path="-l, --log-level" type="string" default="info">
+  Logging verbosity. Use `debug` to see individual finding upload progress and
+  hash computation details. Possible values: `info`, `debug`.
+</ParamField>
+
+<ParamField path="-u, --url" type="string" required>
+  Base URL of your DefectDojo instance, e.g. `http://localhost:8080`. The tool
+  appends `/api/v2/` automatically.
+</ParamField>
+
+<ParamField path="-t, --token" type="string" required>
+  DefectDojo API v2 key. Find or generate this in the DefectDojo web UI under
+  **API v2 Key** in your user profile.
+</ParamField>
+
+<ParamField path="-i, --input" type="path" required>
+  Directory to recursively search for `.casrep` files. For each `.casrep` file
+  found, `casr-dojo` also looks for a `.gdb.casrep` file and a crash seed file
+  (the file with the same name minus the `.casrep` extension) in the same
+  location.
+</ParamField>
+
+## Deduplication Logic
+
+`casr-dojo` uses the same deduplication strategy as `casr-cluster -d`:
+
+- **ASAN / MSAN / GDB / Python / Java / JS reports** — a filtered stack trace
+  hash is computed. Frames matching CASR's internal ignore list (standard
+  library internals, fuzzer harness frames, etc.) are stripped before hashing.
+- **UBSAN reports** — the crash source file path and line number are used as the
+  deduplication key.
+
+A local report is uploaded only if its hash does not match any active, false
+positive, or out-of-scope finding that already has an attached CASR report file
+in DefectDojo.
+
+## DefectDojo Quick Start
+
+If you do not already have a DefectDojo instance, spin one up with Docker
+Compose:
+
+```bash
+git clone https://github.com/DefectDojo/django-DefectDojo.git
+cd django-DefectDojo
+./dc-build.sh
+./dc-up.sh
+# Wait for initialization to complete:
+#   django-defectdojo_initializer_1 exited with code 0
+# Retrieve the generated admin password:
+docker-compose logs initializer | grep "Admin password:"
+```
+
+The instance will be available at `http://localhost:8080`. Generate an API key
+from the admin account's profile page.
+
+## Example Upload
+
+Create the TOML configuration on the fly and upload clustered CASR reports:
+
+```bash
+echo '[product]'                              > dojo.toml
+echo 'name = "xlnt"'                         >> dojo.toml
+echo '[engagement]'                           >> dojo.toml
+echo "name = \"load_fuzzer $(date -Isec)\""  >> dojo.toml
+echo '[test]'                                 >> dojo.toml
+echo 'test_type = "CASR DAST Report"'        >> dojo.toml
+
+casr-dojo \
+    -i casr/tests/casr_tests/casrep/test_clustering_san \
+    -u http://localhost:8080 \
+    -t 382f5dfdf2a339f7c3bb35442f9deb9b788a98d5 \
+    dojo.toml
+```
+
+<Tip>
+  Embed `$(date -Isec)` in the engagement `name` to create a new engagement for
+  each CI run. This keeps findings from different fuzzing sessions separate in
+  the DefectDojo UI while still deduplicating against all previously uploaded
+  findings for the same product.
+</Tip>
+
+After the upload, each finding in DefectDojo contains:
+- A title in the format `[product] [executable] <severity> in <crash line>`
+- A rich description with crash line, severity, ASAN/UBSAN output, stack trace,
+  source fragment, and environment variables
+- The `.casrep` file attached as `CASR (finding <id>)`
+- The `.gdb.casrep` file attached as `CASR GDB (finding <id>)`, if present
+- The original crash seed attached as `Crash seed (finding <id>)`

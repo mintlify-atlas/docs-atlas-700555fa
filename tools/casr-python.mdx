@@ -1,0 +1,101 @@
+---
+title: "casr-python: Python Crash Report Generator"
+sidebarTitle: "casr-python"
+description: "Generate CASR reports from Python exceptions and Atheris fuzzer crashes. Parses tracebacks and integrates with libFuzzer-based Python fuzzing workflows."
+---
+
+`casr-python` analyzes Python crash output — including unhandled exceptions and tracebacks — and produces structured `.casrep` reports. It integrates directly with [Atheris](https://github.com/google/atheris), Google's coverage-guided Python fuzzer built on libFuzzer, making it a natural fit for Python fuzzing pipelines.
+
+When the target program produces sanitizer output (AddressSanitizer, MemorySanitizer, or libFuzzer markers) alongside a Python exception, `casr-python` automatically delegates to `casr-san` for ASAN-level analysis. Otherwise it extracts the Python `Traceback` from stderr, parses each `File "…", line N, in fn` frame, resolves the crash line, and records the source snippet.
+
+## Synopsis
+
+```
+casr-python [OPTIONS] <--stdout|--output <REPORT>> -- <ARGS>...
+```
+
+The `--` separator is required. Everything after it is the command CASR will execute and capture output from.
+
+## Options
+
+<ParamField body="-o, --output" type="path">
+  Path to save the `.casrep` report file. If a directory is provided, the report filename is generated automatically from the crash context.
+</ParamField>
+
+<ParamField body="--stdout" type="flag">
+  Print the CASR report as JSON to stdout instead of writing it to a file. Mutually exclusive with `--output`; exactly one of the two is required.
+</ParamField>
+
+<ParamField body="--stdin" type="path">
+  Path to a file that will be fed to the target program's standard input. Useful when the fuzz target reads a corpus entry from stdin.
+</ParamField>
+
+<ParamField body="-t, --timeout" type="integer" default="0">
+  Maximum number of seconds to wait for the target process to finish. A value of `0` disables the timeout entirely.
+</ParamField>
+
+<ParamField body="--ignore" type="path">
+  Path to a file containing regular expressions (one per section) for function names and file paths that should be excluded from stack trace analysis. See the ignore-file format below.
+</ParamField>
+
+<ParamField body="--strip-path" type="string">
+  A path prefix that will be removed from every file path in the stack trace and crash line. Keeps reports portable when shared across machines. Also settable via the `CASR_STRIP_PATH` environment variable.
+</ParamField>
+
+<ParamField body="--ld-preload" type="string">
+  One or more shared library paths to inject via `LD_PRELOAD` into the **target** process only. Both space (` `) and colon (`:`) are accepted as delimiters. CASR's own process is not affected. Also settable via `CASR_PRELOAD`.
+</ParamField>
+
+## Ignore-file format
+
+```
+FUNCTIONS
+^atheris\.
+^_?fuzz
+
+FILES
+/usr/lib/python
+site-packages/
+```
+
+Headers `FUNCTIONS` and `FILES` may appear in either order; either section may be omitted. Frames whose function name or source file matches any listed regex are skipped during analysis.
+
+## Example
+
+Run a plain Python script that raises an unhandled exception:
+
+```bash
+casr-python -o python.casrep -- casr/tests/casr_tests/python/test_casr_python.py
+```
+
+Print the report to stdout (useful for piping into `jq` or other tools):
+
+```bash
+casr-python --stdout -- casr/tests/casr_tests/python/test_casr_python.py
+```
+
+Pass a corpus file on stdin and limit execution to 10 seconds:
+
+```bash
+casr-python -o python.casrep -t 10 --stdin crash_input -- python3 fuzz_target.py
+```
+
+## Fuzzer integration
+
+`casr-python` handles single-crash analysis. For bulk triage of Atheris crash directories, use [`casr-libfuzzer`](/fuzzing/casr-libfuzzer) — it auto-detects Python targets and invokes `casr-python` for each input file.
+
+```bash
+# Triage a directory of Atheris crashes
+casr-libfuzzer \
+  -i casr/tests/casr_tests/casrep/atheris_crashes_ruamel_yaml \
+  -o out/ \
+  -- casr/tests/casr_tests/python/yaml_fuzzer.py
+```
+
+<Note>
+  When Atheris runs with AddressSanitizer enabled, crash output contains both a Python traceback and ASAN diagnostics. `casr-python` detects this automatically and forwards to `casr-san` so the full ASAN severity analysis is applied.
+</Note>
+
+<Tip>
+  If your Atheris fuzz target wraps the fuzzed library in a `try/except` block that re-raises, ensure the final exception propagates unhandled — `casr-python` looks for the `Traceback (most recent call last):` marker in stderr to locate the report.
+</Tip>

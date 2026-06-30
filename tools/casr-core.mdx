@@ -1,0 +1,162 @@
+---
+title: "casr-core: Coredump Analysis and Report Generation"
+sidebarTitle: "casr-core"
+description: "Analyse Linux coredump files to produce CASR reports with severity estimation. Supports both offline analysis of existing cores and online interception via core_pattern."
+---
+
+`casr-core` analyses ELF coredump files and produces structured `.casrep` JSON reports
+with severity estimation, stack traces, register values, disassembly, and memory
+mappings. It operates in two modes:
+
+- **Offline** — analyse an already-collected coredump file. This is the default.
+- **Online** — intercept crashes in real time by registering `casr-core` as the kernel's
+  `core_pattern` handler, so reports and cores are saved automatically to `/var/crash`
+  whenever any process crashes.
+
+## Synopsis
+
+```
+Usage: casr-core [OPTIONS]
+
+Options:
+  -m, --mode <MODE>        Offline mode analyzes collected coredumps, online mode
+                           intercepts coredumps via core_pattern [default: offline]
+                           [possible values: online, offline]
+  -f, --file <FILE>        Path to input core file
+  -o, --output <FILE>      Path to save report in JSON format
+      --stdout             Print CASR report to stdout
+  -e, --executable <FILE>  Path to executable
+  -h, --help               Print help
+  -V, --version            Print version
+```
+
+## Options
+
+<ParamField path="-m, --mode" type="string" default="offline">
+  Operating mode. Use `offline` (default) to analyse an existing coredump file, or
+  `online` to act as a `core_pattern` handler that intercepts crashes as they happen.
+
+  Possible values: `online`, `offline`
+</ParamField>
+
+<ParamField path="-f, --file" type="path">
+  Path to the coredump file to analyse. **Required in offline mode.**
+</ParamField>
+
+<ParamField path="-o, --output" type="path">
+  Path where the generated `.casrep` JSON report will be saved. Required in offline mode
+  unless `--stdout` is specified.
+</ParamField>
+
+<ParamField path="--stdout" type="flag">
+  Print the CASR report as JSON to stdout. Can be combined with `--output` or used alone
+  in offline mode.
+</ParamField>
+
+<ParamField path="-e, --executable" type="path">
+  Path to the executable that produced the coredump. Providing this allows `casr-core`
+  to resolve symbol names and improve severity analysis.
+</ParamField>
+
+## Offline Mode
+
+Offline mode is the default. Provide a coredump file with `-f` and optionally the
+corresponding executable with `-e`.
+
+### Example
+
+```bash
+casr-core \
+    -f casr/tests/casr_tests/bin/core.test_destAv \
+    -e casr/tests/casr_tests/bin/test_destAv \
+    -o destAv.casrep
+```
+
+Print the report to stdout instead of a file:
+
+```bash
+casr-core \
+    -f core.test_destAv \
+    -e ./test_destAv \
+    --stdout
+```
+
+## Online Mode
+
+In online mode `casr-core` registers itself as the kernel coredump handler via
+`core_pattern`. Whenever any process crashes, the kernel pipes the coredump directly to
+`casr-core`, which saves both the coredump and the `.casrep` report to `/var/crash`.
+
+<Steps>
+  <Step title="Create the /var/crash directory">
+    Create the output directory and make it world-writable so that processes running as
+    any user can have their crashes captured:
+
+    ```bash
+    sudo mkdir -m 777 /var/crash
+    ```
+  </Step>
+  <Step title="Register casr-core as the core_pattern handler">
+    Replace the kernel's core pattern with a pipe to `casr-core`. Substitute
+    `<path_to_casr_core_binary>` with the absolute path to your `casr-core` binary:
+
+    ```bash
+    echo "|<path_to_casr_core_binary> -m online -c %c -p %p -P %P -u %u -g %g -e %E" \
+        | sudo tee /proc/sys/kernel/core_pattern
+    ```
+
+    The kernel format specifiers used here:
+
+    | Specifier | Meaning |
+    |-----------|---------|
+    | `%c`      | Core file size soft resource limit of the crashing process |
+    | `%p`      | PID of the dumped process (in its PID namespace) |
+    | `%P`      | PID of the dumped process (in the initial PID namespace) |
+    | `%u`      | Real UID of the dumped process |
+    | `%g`      | Real GID of the dumped process |
+    | `%E`      | Pathname of the executable (slashes replaced with `!`) |
+  </Step>
+  <Step title="Enable coredumps with ulimit">
+    Ensure the shell (and any child processes) are allowed to produce coredumps:
+
+    ```bash
+    ulimit -c unlimited
+    ```
+  </Step>
+  <Step title="Trigger test crashes">
+    Run the provided test script to verify everything works:
+
+    ```bash
+    cd casr/tests/casr_tests/bin && ./run.sh
+    ```
+
+    Reports and coredumps will appear in `/var/crash`.
+  </Step>
+</Steps>
+
+## Notes
+
+<Note>
+  **Supported architectures** — `casr-core` supports x86 (32-bit), x86-64, ARM, AArch64,
+  and RISC-V coredumps. The core file must be a valid ELF file of type `ET_CORE`.
+</Note>
+
+<Warning>
+  **ulimit must be non-zero** — In online mode, if the core size limit (`ulimit -c`) is
+  set to `0`, `casr-core` will log an error and skip analysis. Always set
+  `ulimit -c unlimited` or a suitable non-zero value before using online mode.
+</Warning>
+
+<Note>
+  **Online mode logs** — In online mode, `casr-core` appends diagnostic messages to
+  `/var/log/casr.log`. Check this file if reports are not appearing in `/var/crash`.
+</Note>
+
+<Tip>
+  To revert to the default coredump behaviour after testing, restore the standard kernel
+  core pattern:
+
+  ```bash
+  echo "core" | sudo tee /proc/sys/kernel/core_pattern
+  ```
+</Tip>

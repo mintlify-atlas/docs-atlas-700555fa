@@ -1,0 +1,119 @@
+---
+title: "casr-lua: Lua Crash Report Generator"
+sidebarTitle: "casr-lua"
+description: "Generate CASR reports from Lua runtime exceptions and luzer fuzzer crashes. Parses Lua stack tracebacks with source file and line number resolution."
+---
+
+`casr-lua` analyzes Lua crash output — runtime errors followed by `stack traceback:` sections — and produces structured `.casrep` reports. It integrates with [luzer](https://github.com/ligurio/luzer), the libFuzzer-based coverage-guided Lua fuzzer, and is invoked automatically by [`casr-libfuzzer`](/fuzzing/casr-libfuzzer) when a Lua target is detected.
+
+The tool extracts the exception message and severity from the first line of the Lua error output, then parses each `file:line: in function/chunk` frame from the traceback. C-level frames (`[C]: in …`) are skipped since they carry no Lua source information. When the crash line resolves to a readable `.lua` file, the source snippet is embedded in the report.
+
+## Synopsis
+
+```
+casr-lua [OPTIONS] <--stdout|--output <REPORT>> -- <ARGS>...
+```
+
+The `--` separator is required. Everything after it is the command CASR will execute (typically a `.lua` script directly, or `lua <script.lua>`).
+
+## Options
+
+<ParamField body="-o, --output" type="path">
+  Path to save the `.casrep` report file. If a directory is provided, the report filename is generated automatically from the crash context.
+</ParamField>
+
+<ParamField body="--stdout" type="flag">
+  Print the CASR report as JSON to stdout instead of writing it to a file. Mutually exclusive with `--output`; exactly one of the two is required.
+</ParamField>
+
+<ParamField body="--stdin" type="path">
+  Path to a file fed to the target program's standard input. Use this when the Lua fuzz harness reads corpus bytes from stdin.
+</ParamField>
+
+<ParamField body="-t, --timeout" type="integer" default="0">
+  Maximum number of seconds to wait for the target process to finish. A value of `0` disables the timeout entirely.
+</ParamField>
+
+<ParamField body="--ignore" type="path">
+  Path to a file containing regular expressions for function names and file paths that should be excluded from stack trace analysis.
+</ParamField>
+
+<ParamField body="--strip-path" type="string">
+  A path prefix removed from every file path in the stack trace and crash line. Keeps reports portable when the Lua source tree lives at an absolute path. Also settable via `CASR_STRIP_PATH`.
+</ParamField>
+
+<ParamField body="--ld-preload" type="string">
+  Shared library paths injected via `LD_PRELOAD` into the target process only. Space or colon delimited. Also settable via `CASR_PRELOAD`.
+</ParamField>
+
+## Stack trace parsing
+
+`casr-lua` looks for the pattern:
+
+```
+<interpreter>: <file>:<line>: <message>
+stack traceback:
+    [C]: in function '...'
+    /path/to/script.lua:28: in function 'some_func'
+    /path/to/script.lua:18: in main chunk
+    [C]: in ?
+```
+
+Each `file:line: in <kind> <name>` frame is extracted. Frames beginning with `[C]:` are silently skipped. The executable path in the report is set to the `.lua` script when `lua` or a `lua`-prefixed interpreter is the launcher and the first argument ends in `.lua`.
+
+## Example
+
+Analyze a Lua script that raises a runtime error:
+
+```bash
+casr-lua -o lua.casrep -- casr/tests/casr_tests/lua/test_casr_lua.lua
+```
+
+Analyze a Lua script run via the `lua` interpreter explicitly:
+
+```bash
+casr-lua -o lua.casrep -- lua casr/tests/casr_tests/lua/test_casr_lua.lua
+```
+
+Print the report to stdout:
+
+```bash
+casr-lua --stdout -- casr/tests/casr_tests/lua/test_casr_lua.lua
+```
+
+Set a timeout and strip the build path:
+
+```bash
+casr-lua -o lua.casrep -t 30 \
+  --strip-path /home/ci/workspace \
+  -- lua fuzz_target.lua crash_input
+```
+
+## Fuzzer integration
+
+`casr-lua` handles single-crash analysis. For bulk triage of luzer crash directories, use [`casr-libfuzzer`](/fuzzing/casr-libfuzzer), which auto-detects Lua targets and invokes `casr-lua` for each crash file.
+
+```bash
+# Build luzer and the target library first
+unzip casr/tests/casr_tests/lua/xml2lua.zip
+cd xml2lua && luarocks --local build && cd ..
+
+git clone https://github.com/ligurio/luzer.git
+cd luzer && luarocks --local build && cd ..
+
+eval $(luarocks path)
+
+# Triage a directory of luzer crashes
+casr-libfuzzer \
+  -i casr/tests/casr_tests/casrep/luzer_crashes_xml2lua \
+  -o out/ \
+  -- casr/tests/casr_tests/lua/stdin_parse_xml.lua
+```
+
+<Note>
+  `casr-lua` requires that the Lua runtime print a `stack traceback:` section to stderr. If the exception is caught and swallowed inside the script without re-raising, no report can be generated. Ensure fuzz harnesses propagate errors to the top level.
+</Note>
+
+<Tip>
+  luzer crash files are named after the libFuzzer crash seed format (e.g., `crash-<sha1>`). When replaying individual crashes for investigation, pass the crash file as the last argument to your Lua fuzz target script and use `casr-lua` with `-o` to save the report for later review with `casr-cli`.
+</Tip>
